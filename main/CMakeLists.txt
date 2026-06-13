@@ -1,0 +1,30 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "rfid.c"
+        "network.c"
+        "storage.c"
+        "ota.c"
+        "led.c"
+        "event_log.c"
+
+    INCLUDE_DIRS
+        "."
+
+    REQUIRES
+        nvs_flash
+        esp_event
+        esp_netif
+        esp_wifi
+        esp_http_client
+        app_update
+        bootloader_support
+        esp_partition
+        esp_timer
+        driver
+        spi_flash
+        mbedtls
+        json
+        esp_littlefs
+        rc522
+)
