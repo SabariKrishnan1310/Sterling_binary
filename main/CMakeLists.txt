@@ -17,6 +17,7 @@ idf_component_register(
         esp_netif
         esp_wifi
         esp_http_client
+        esp_https_ota
         app_update
         bootloader_support
         esp_partition
@@ -24,7 +25,8 @@ idf_component_register(
         driver
         spi_flash
         mbedtls
+        efuse
         json
-        esp_littlefs
+        littlefs
         rc522
 )

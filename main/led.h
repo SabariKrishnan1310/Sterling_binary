@@ -19,3 +19,4 @@ typedef struct {
 esp_err_t led_init(void);
 esp_err_t led_send(led_pattern_t pattern);
 QueueHandle_t led_get_queue(void);
+void led_task(void *pvParameters);

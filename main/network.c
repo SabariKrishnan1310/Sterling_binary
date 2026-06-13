@@ -8,6 +8,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_efuse.h"
+#include "esp_mac.h"
 #include "esp_http_client.h"
 #include "nvs_flash.h"
 #include "mbedtls/md.h"
