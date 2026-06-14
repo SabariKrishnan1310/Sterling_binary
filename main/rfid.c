@@ -87,6 +87,12 @@ esp_err_t rfid_init(void)
         return err;
     }
 
+    err = rc522_driver_install(spi_driver);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "rc522_driver_install failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
     rc522_config_t rc522_cfg = {
         .driver = spi_driver,
         .poll_interval_ms = 200,

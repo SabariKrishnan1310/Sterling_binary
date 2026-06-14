@@ -7,6 +7,7 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_efuse.h"
 #include "esp_mac.h"
 #include "esp_http_client.h"
@@ -15,6 +16,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/time.h>
+#include <time.h>
 
 static const char *TAG = "network";
 
@@ -22,6 +24,7 @@ EventGroupHandle_t wifi_event_group = NULL;
 
 static int s_retry_count = 0;
 static int s_active_profile = 0;
+static bool s_time_synced = false;
 
 typedef struct {
     char ssid[64];
@@ -116,6 +119,20 @@ static void switch_to_profile(int idx)
     ESP_LOGI(TAG, "Switched to profile %d: SSID=%s", idx, profiles[idx].ssid);
 }
 
+static void sync_time(void)
+{
+    setenv("TZ", "IST-5:30", 1);
+    tzset();
+
+    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    sntp_cfg.wait_for_sync = false;
+    sntp_cfg.start = true;
+    esp_netif_sntp_init(&sntp_cfg);
+
+    ESP_LOGI(TAG, "Time sync started (IST timezone)");
+    s_time_synced = true;
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data)
 {
@@ -143,6 +160,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         xEventGroupClearBits(wifi_event_group, WIFI_DISCONNECTED_BIT);
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
         event_log_write(EVT_WIFI_CONNECTED);
+
+        if (!s_time_synced) {
+            sync_time();
+        }
     }
 }
 
