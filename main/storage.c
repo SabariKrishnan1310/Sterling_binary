@@ -143,7 +143,12 @@ esp_err_t storage_init(void)
 
 esp_err_t storage_append_tap(const char *uid, uint32_t *out_seq)
 {
-    if (!taps_fp) return ESP_FAIL;
+    if (!taps_fp) {
+        ESP_LOGE(TAG, "[DBG] append: file not open");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "[DBG] append: uid=%s next_seq=%lu", uid, (unsigned long)next_seq);
 
     tap_record_t rec;
     memset(&rec, 0, sizeof(rec));
@@ -178,6 +183,8 @@ esp_err_t storage_append_tap(const char *uid, uint32_t *out_seq)
     total_count++;
     pending_count++;
 
+    ESP_LOGI(TAG, "[DBG] append: OK seq=%lu total=%lu pending=%lu",
+             (unsigned long)rec.seq, (unsigned long)total_count, (unsigned long)pending_count);
     return ESP_OK;
 }
 

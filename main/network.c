@@ -4,6 +4,7 @@
 #include "led.h"
 #include "config.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -11,8 +12,10 @@
 #include "esp_efuse.h"
 #include "esp_mac.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "nvs_flash.h"
 #include "mbedtls/md.h"
+#include "cJSON.h"
 #include <string.h>
 #include <stdio.h>
 #include <sys/time.h>
@@ -137,10 +140,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        ESP_LOGI(TAG, "[DBG] wifi_event: STA_START");
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *disc = (wifi_event_sta_disconnected_t *)event_data;
-        ESP_LOGI(TAG, "WiFi disconnected, reason=%d", disc->reason);
+        ESP_LOGW(TAG, "[DBG] wifi_event: DISCONNECTED reason=%d", disc->reason);
         xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
         xEventGroupSetBits(wifi_event_group, WIFI_DISCONNECTED_BIT);
         event_log_write(EVT_WIFI_DISCONNECTED);
@@ -221,19 +225,23 @@ esp_err_t network_start_wifi(void)
 
     ESP_LOGI(TAG, "Connecting to profile 0: SSID=%s", profiles[0].ssid);
 
+    ESP_LOGI(TAG, "[DBG] wifi_start: stopping previous connection");
     esp_wifi_stop();
     esp_wifi_set_mode(WIFI_MODE_STA);
+    ESP_LOGI(TAG, "[DBG] wifi_start: setting config for %s", profiles[0].ssid);
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "set_config failed: %s", esp_err_to_name(err));
         return err;
     }
+    ESP_LOGI(TAG, "[DBG] wifi_start: starting WiFi");
     err = esp_wifi_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "wifi_start failed: %s", esp_err_to_name(err));
         return err;
     }
 
+    ESP_LOGI(TAG, "[DBG] wifi_start: OK");
     return ESP_OK;
 }
 
@@ -375,12 +383,122 @@ static esp_err_t send_batch(upload_entry_t *entries, int count)
     return ESP_FAIL;
 }
 
+static int load_immediate_seq(void)
+{
+    nvs_handle_t handle;
+    int32_t seq = 0;
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &handle);
+    if (err == ESP_OK) {
+        nvs_get_i32(handle, "seq", &seq);
+        nvs_close(handle);
+    }
+    ESP_LOGI(TAG, "[DBG] load_immediate_seq: %d", (int)seq);
+    return (int)seq;
+}
+
+static void save_immediate_seq(int seq)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        nvs_set_i32(handle, "seq", seq);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+    ESP_LOGI(TAG, "[DBG] save_immediate_seq: %d", seq);
+}
+
+esp_err_t network_send_tap_single(const char *uid)
+{
+    ESP_LOGI(TAG, "[DBG] network_send_tap_single: uid=%s", uid);
+
+    EventBits_t bits = xEventGroupGetBits(wifi_event_group);
+    if (!(bits & WIFI_CONNECTED_BIT)) {
+        ESP_LOGW(TAG, "[DBG] send_tap_single: WiFi not connected");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "[DBG] send_tap_single: WiFi OK");
+
+    int seq = load_immediate_seq() + 1;
+    ESP_LOGI(TAG, "[DBG] send_tap_single: seq=%d", seq);
+
+    char device_id[32];
+    get_device_id(device_id, sizeof(device_id));
+    ESP_LOGI(TAG, "[DBG] send_tap_single: device_id=%s", device_id);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "raw_hex", uid);
+    cJSON_AddStringToObject(root, "device_id", device_id);
+    cJSON_AddNumberToObject(root, "seq", seq);
+    cJSON_AddNullToObject(root, "timestamp");
+    char *json_body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    ESP_LOGI(TAG, "[DBG] send_tap_single: json_body=%s", json_body);
+
+    char sig_data[512];
+    snprintf(sig_data, sizeof(sig_data), "%d%s", seq, json_body);
+    ESP_LOGI(TAG, "[DBG] send_tap_single: sig_data len=%zu", strlen(sig_data));
+
+    char signature[65];
+    esp_err_t err = compute_hmac(sig_data, strlen(sig_data), signature);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "[DBG] send_tap_single: HMAC failed");
+        free(json_body);
+        return err;
+    }
+    ESP_LOGI(TAG, "[DBG] send_tap_single: signature=%s", signature);
+
+    esp_http_client_config_t cfg = {
+        .url = API_URL,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = HTTP_TIMEOUT_MS,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .skip_cert_common_name_check = true,
+    };
+    ESP_LOGI(TAG, "[DBG] send_tap_single: HTTP config ready");
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        ESP_LOGE(TAG, "[DBG] send_tap_single: http client init failed");
+        free(json_body);
+        return ESP_FAIL;
+    }
+
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, HMAC_HEADER, signature);
+    esp_http_client_set_post_field(client, json_body, strlen(json_body));
+    ESP_LOGI(TAG, "[DBG] send_tap_single: headers set, performing POST");
+
+    err = esp_http_client_perform(client);
+    int status = 0;
+    if (err == ESP_OK) {
+        status = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "[DBG] send_tap_single: HTTP status=%d", status);
+    } else {
+        ESP_LOGW(TAG, "[DBG] send_tap_single: HTTP error=%s", esp_err_to_name(err));
+    }
+
+    esp_http_client_cleanup(client);
+    free(json_body);
+
+    if (err == ESP_OK && status == 202) {
+        save_immediate_seq(seq);
+        ESP_LOGI(TAG, "[DBG] send_tap_single: SUCCESS seq=%d", seq);
+        return ESP_OK;
+    }
+
+    ESP_LOGW(TAG, "[DBG] send_tap_single: FAILED (err=%s status=%d)",
+             err == ESP_OK ? "OK" : esp_err_to_name(err), status);
+    return ESP_FAIL;
+}
+
 void upload_task(void *pvParameters)
 {
     upload_entry_t entries[UPLOAD_BATCH_SIZE];
     TickType_t last_upload_tick = xTaskGetTickCount();
 
     while (1) {
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(1000));
 
         EventBits_t bits = xEventGroupGetBits(wifi_event_group);

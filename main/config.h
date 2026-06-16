@@ -4,7 +4,7 @@
 // STERLING PROD
 // ======================================================
 
-#define FW_VERSION                     "1.0.1"
+#define FW_VERSION                     "1.0.2"
 
 // ======================================================
 // RFID PINS
@@ -37,7 +37,7 @@
 "https://api.sabarikrishnan.me/ingest/v2/tap"
 
 #define API_SECRET \
-"super-secret-key-change-me"
+"I9tw7cybkxY7-UQ3MrJOHJ11x_Sl2e9TRDmbIE43Jllnxsd-J0RPNkHvjeqyFPhzIMmT1k0IC7Pbtr0RsdPPzg"
 
 // ======================================================
 // OTA
@@ -49,7 +49,7 @@
 #define OTA_FIRMWARE_URL \
 "https://github.com/SabariKrishnan1310/Sterling_binary/releases/latest/download/firmware.bin"
 
-#define OTA_CHECK_INTERVAL_MS          30000
+#define OTA_CHECK_INTERVAL_MS          10000
 
 // ======================================================
 // NETWORK
@@ -78,7 +78,7 @@
 // HMAC
 // ======================================================
 
-#define HMAC_HEADER                    "X-HMAC-Signature"
+#define HMAC_HEADER                    "X-Sterling-Signature"
 #define HMAC_HEX_LEN                   65
 
 // ======================================================

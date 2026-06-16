@@ -4,6 +4,7 @@
 #include "network.h"
 #include "config.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
@@ -163,22 +164,26 @@ esp_err_t ota_init(void)
 
 void ota_task(void *pvParameters)
 {
+    ESP_LOGI(TAG, "[DBG] ota_task: starting...");
     ota_init();
 
-    TickType_t last_check = xTaskGetTickCount();
-
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-
-        TickType_t now = xTaskGetTickCount();
-        if ((now - last_check) < pdMS_TO_TICKS(OTA_CHECK_INTERVAL_MS)) {
-            continue;
-        }
-        last_check = now;
+        esp_task_wdt_reset();
 
         EventBits_t bits = xEventGroupGetBits(wifi_event_group);
         if (bits & WIFI_CONNECTED_BIT) {
-            ota_check_update();
+            ESP_LOGI(TAG, "[DBG] ota_task: WiFi connected, checking for updates");
+            esp_err_t err = ota_check_update();
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "[DBG] ota_task: check OK (up to date or updated)");
+            } else {
+                ESP_LOGW(TAG, "[DBG] ota_task: check returned %s", esp_err_to_name(err));
+            }
+        } else {
+            ESP_LOGD(TAG, "[DBG] ota_task: WiFi not connected, skipping");
         }
+
+        ESP_LOGD(TAG, "[DBG] ota_task: sleeping %dms", OTA_CHECK_INTERVAL_MS);
+        vTaskDelay(pdMS_TO_TICKS(OTA_CHECK_INTERVAL_MS));
     }
 }

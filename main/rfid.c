@@ -1,11 +1,13 @@
 #include "rfid.h"
 #include "storage.h"
+#include "network.h"
 #include "event_log.h"
 #include "led.h"
 #include "config.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_event.h"
+#include "esp_task_wdt.h"
 #include "rc522.h"
 #include "driver/rc522_spi.h"
 #include <string.h>
@@ -130,38 +132,58 @@ esp_err_t rfid_init(void)
 
 void rfid_task(void *pvParameters)
 {
+    ESP_LOGI(TAG, "[DBG] rfid_task: starting init...");
+
     esp_err_t err = rfid_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "RFID init failed, will retry in 10s");
+        ESP_LOGE(TAG, "[DBG] rfid_task: init failed=%s, retry in 10s", esp_err_to_name(err));
         vTaskDelay(pdMS_TO_TICKS(10000));
+        ESP_LOGI(TAG, "[DBG] rfid_task: retry init...");
         err = rfid_init();
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "RFID retry failed, task will idle");
+            ESP_LOGE(TAG, "[DBG] rfid_task: retry failed, idling");
             while (1) {
+                esp_task_wdt_reset();
                 vTaskDelay(pdMS_TO_TICKS(60000));
             }
         }
     }
 
-    ESP_LOGI(TAG, "RFID task running on core %d", xPortGetCoreID());
+    ESP_LOGI(TAG, "[DBG] rfid_task: init OK on core %d", xPortGetCoreID());
 
     tap_message_t msg;
 
     while (1) {
+        esp_task_wdt_reset();
         BaseType_t received = xQueueReceive(tap_queue, &msg, pdMS_TO_TICKS(1000));
 
         if (received == pdTRUE) {
-            ESP_LOGI(TAG, "Card detected: %s (len=%d)", msg.uid, msg.uid_len);
+            ESP_LOGI(TAG, "[DBG] rfid_task: CARD DETECTED uid=%s len=%d", msg.uid, msg.uid_len);
+
+            EventBits_t bits = xEventGroupGetBits(wifi_event_group);
+            if (bits & WIFI_CONNECTED_BIT) {
+                ESP_LOGI(TAG, "[DBG] rfid_task: WiFi up, trying immediate upload");
+                err = network_send_tap_single(msg.uid);
+                if (err == ESP_OK) {
+                    ESP_LOGI(TAG, "[DBG] rfid_task: immediate UPLOAD SUCCESS uid=%s", msg.uid);
+                    event_log_write(EVT_RFID_READ);
+                    led_send(LED_PATTERN_SUCCESS);
+                    continue;
+                }
+                ESP_LOGW(TAG, "[DBG] rfid_task: immediate upload FAILED, saving to local storage");
+            } else {
+                ESP_LOGI(TAG, "[DBG] rfid_task: WiFi DOWN, storing locally");
+            }
 
             uint32_t seq;
-            esp_err_t storage_err = storage_append_tap(msg.uid, &seq);
-            if (storage_err == ESP_OK) {
+            err = storage_append_tap(msg.uid, &seq);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "[DBG] rfid_task: stored locally seq=%lu uid=%s", (unsigned long)seq, msg.uid);
                 event_log_write(EVT_RFID_READ);
                 led_send(LED_PATTERN_SUCCESS);
-                ESP_LOGI(TAG, "Tap stored: seq=%lu uid=%s", seq, msg.uid);
             } else {
+                ESP_LOGE(TAG, "[DBG] rfid_task: storage failed=%s", esp_err_to_name(err));
                 led_send(LED_PATTERN_FAILURE);
-                ESP_LOGE(TAG, "Failed to store tap for uid=%s", msg.uid);
             }
         }
     }
