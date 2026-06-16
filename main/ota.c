@@ -8,6 +8,7 @@
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#include "esp_crt_bundle.h"
 #include "esp_system.h"
 #include <string.h>
 #include <sys/param.h>
@@ -22,7 +23,8 @@ static esp_err_t http_fetch_to_buffer(const char *url, char *buf, size_t buf_siz
         .url = url,
         .method = HTTP_METHOD_GET,
         .timeout_ms = HTTP_TIMEOUT_MS,
-        .skip_cert_common_name_check = false,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .skip_cert_common_name_check = true,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -71,7 +73,8 @@ static esp_err_t perform_ota(const char *firmware_url)
         .url = firmware_url,
         .timeout_ms = 60000,
         .keep_alive_enable = false,
-        .skip_cert_common_name_check = false,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .skip_cert_common_name_check = true,
     };
 
     esp_https_ota_config_t ota_cfg = {

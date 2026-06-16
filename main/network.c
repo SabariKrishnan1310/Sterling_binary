@@ -348,7 +348,8 @@ static esp_err_t send_batch(upload_entry_t *entries, int count)
         .url = API_URL,
         .method = HTTP_METHOD_POST,
         .timeout_ms = HTTP_TIMEOUT_MS,
-        .skip_cert_common_name_check = false,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .skip_cert_common_name_check = true,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
