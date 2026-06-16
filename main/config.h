@@ -4,7 +4,7 @@
 // STERLING PROD
 // ======================================================
 
-#define FW_VERSION                     "1.0.2"
+#define FW_VERSION                     "1.0.3"
 
 // ======================================================
 // RFID PINS
@@ -34,7 +34,7 @@
 // ======================================================
 
 #define API_URL \
-"https://api.sabarikrishnan.me/ingest/v2/tap"
+"http://api.sabarikrishnan.me/ingest/v2/tap/"
 
 #define API_SECRET \
 "I9tw7cybkxY7-UQ3MrJOHJ11x_Sl2e9TRDmbIE43Jllnxsd-J0RPNkHvjeqyFPhzIMmT1k0IC7Pbtr0RsdPPzg"

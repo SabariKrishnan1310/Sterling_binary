@@ -12,7 +12,6 @@
 #include "esp_efuse.h"
 #include "esp_mac.h"
 #include "esp_http_client.h"
-#include "esp_crt_bundle.h"
 #include "nvs_flash.h"
 #include "mbedtls/md.h"
 #include "cJSON.h"
@@ -348,8 +347,7 @@ static esp_err_t send_batch(upload_entry_t *entries, int count)
         .url = API_URL,
         .method = HTTP_METHOD_POST,
         .timeout_ms = HTTP_TIMEOUT_MS,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .skip_cert_common_name_check = true,
+        .max_redirection_count = 5,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -453,8 +451,7 @@ esp_err_t network_send_tap_single(const char *uid)
         .url = API_URL,
         .method = HTTP_METHOD_POST,
         .timeout_ms = HTTP_TIMEOUT_MS,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .skip_cert_common_name_check = true,
+        .max_redirection_count = 5,
     };
     ESP_LOGI(TAG, "[DBG] send_tap_single: HTTP config ready");
 

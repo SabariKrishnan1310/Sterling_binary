@@ -25,26 +25,35 @@ static esp_err_t http_fetch_to_buffer(const char *url, char *buf, size_t buf_siz
         .timeout_ms = HTTP_TIMEOUT_MS,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = true,
+        .max_redirection_count = 5,
+        .buffer_size = buf_size,
+        .buffer_size_tx = 512,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return ESP_FAIL;
 
-    esp_err_t err = esp_http_client_open(client, 0);
+    esp_err_t err = esp_http_client_perform(client);
     if (err != ESP_OK) {
+        ESP_LOGW(TAG, "HTTP perform failed: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
         return err;
     }
 
-    int content_length = esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    if (status != 200) {
+        ESP_LOGW(TAG, "HTTP status %d", status);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+
+    int content_length = esp_http_client_get_content_length(client);
     if (content_length <= 0 || (size_t)content_length >= buf_size) {
-        esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return ESP_FAIL;
     }
 
     int read_len = esp_http_client_read(client, buf, buf_size - 1);
-    esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
     if (read_len <= 0) return ESP_FAIL;
