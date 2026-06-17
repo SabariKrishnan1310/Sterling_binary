@@ -26,7 +26,7 @@ static esp_err_t http_fetch_to_buffer(const char *url, char *buf, size_t buf_siz
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = true,
         .max_redirection_count = 5,
-        .buffer_size = buf_size,
+        .buffer_size = 1024,
         .buffer_size_tx = 512,
     };
 
@@ -35,20 +35,14 @@ static esp_err_t http_fetch_to_buffer(const char *url, char *buf, size_t buf_siz
 
     esp_err_t err = esp_http_client_perform(client);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "HTTP perform failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "perform failed: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
         return err;
     }
 
     int status = esp_http_client_get_status_code(client);
     if (status != 200) {
-        ESP_LOGW(TAG, "HTTP status %d", status);
-        esp_http_client_cleanup(client);
-        return ESP_FAIL;
-    }
-
-    int content_length = esp_http_client_get_content_length(client);
-    if (content_length <= 0 || (size_t)content_length >= buf_size) {
+        ESP_LOGW(TAG, "status %d", status);
         esp_http_client_cleanup(client);
         return ESP_FAIL;
     }
@@ -56,9 +50,13 @@ static esp_err_t http_fetch_to_buffer(const char *url, char *buf, size_t buf_siz
     int read_len = esp_http_client_read(client, buf, buf_size - 1);
     esp_http_client_cleanup(client);
 
-    if (read_len <= 0) return ESP_FAIL;
+    if (read_len <= 0) {
+        ESP_LOGW(TAG, "read returned %d", read_len);
+        return ESP_FAIL;
+    }
 
     buf[read_len] = '\0';
+    ESP_LOGI(TAG, "fetched: %s", buf);
     return ESP_OK;
 }
 
