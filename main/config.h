@@ -4,7 +4,7 @@
 // STERLING PROD
 // ======================================================
 
-#define FW_VERSION                     "1.0.3"
+#define FW_VERSION                     "1.0.4"
 
 // ======================================================
 // RFID PINS
@@ -26,7 +26,10 @@
 // DEVICE
 // ======================================================
 
-// Fallback name if MAC generation fails
+// Override MAC-based device_id with fixed name (comment out to auto-generate)
+#define DEVICE_ID                      "EUROKIDS-GATE-MAIN"
+
+// Fallback name if MAC generation fails (used when DEVICE_ID not defined)
 #define DEVICE_PREFIX                  "GATE"
 
 // ======================================================
@@ -37,17 +40,17 @@
 "http://api.sabarikrishnan.me/ingest/v2/tap/"
 
 #define API_SECRET \
-"I9tw7cybkxY7-UQ3MrJOHJ11x_Sl2e9TRDmbIE43Jllnxsd-J0RPNkHvjeqyFPhzIMmT1k0IC7Pbtr0RsdPPzg"
+"8_5IOTuP5zqcl1E8KDdJL2Fv0n5JXuwjdXPOoSoohEYvrM7wAPs9_ij3GiHYJNpzBQe7Sjkoxr_iRbPhwx22iw"
 
 // ======================================================
 // OTA
 // ======================================================
 
 #define OTA_VERSION_URL \
-"https://github.com/SabariKrishnan1310/Sterling_binary/releases/latest/download/version.txt"
+"https://raw.githubusercontent.com/SabariKrishnan1310/Sterling_binary/main/version.txt"
 
 #define OTA_FIRMWARE_URL \
-"https://github.com/SabariKrishnan1310/Sterling_binary/releases/latest/download/firmware.bin"
+"https://raw.githubusercontent.com/SabariKrishnan1310/Sterling_binary/main/firmware.bin"
 
 #define OTA_CHECK_INTERVAL_MS          10000
 

@@ -300,6 +300,10 @@ typedef struct {
 
 static void get_device_id(char *buf, size_t len)
 {
+#ifdef DEVICE_ID
+    strncpy(buf, DEVICE_ID, len - 1);
+    buf[len - 1] = '\0';
+#else
     uint8_t mac[6];
     esp_err_t err = esp_efuse_mac_get_default(mac);
     if (err == ESP_OK) {
@@ -308,40 +312,54 @@ static void get_device_id(char *buf, size_t len)
     } else {
         snprintf(buf, len, "%s-UNKNOWN", DEVICE_PREFIX);
     }
+#endif
 }
+
+static esp_err_t send_one_tap(const char *uid, int seq, const char *device_id, char *response_buf, size_t response_buf_size);
 
 static esp_err_t send_batch(upload_entry_t *entries, int count)
 {
     if (count == 0) return ESP_OK;
+    ESP_LOGI(TAG, "Sending %d stored records one by one", count);
 
     char device_id[32];
     get_device_id(device_id, sizeof(device_id));
 
-    size_t payload_size = 512 + (size_t)count * 128;
-    char *payload = (char *)malloc(payload_size);
-    if (!payload) return ESP_ERR_NO_MEM;
-
-    size_t offset = 0;
-    offset += snprintf(payload + offset, payload_size - offset,
-                       "{\"device_id\":\"%s\",\"taps\":[", device_id);
-
     for (int i = 0; i < count; i++) {
-        if (i > 0) {
-            offset += snprintf(payload + offset, payload_size - offset, ",");
+        esp_err_t err = send_one_tap(entries[i].uid, (int)entries[i].seq, device_id, NULL, 0);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Record %d (seq=%lu) failed, stopping batch", i, (unsigned long)entries[i].seq);
+            return ESP_FAIL;
         }
-        offset += snprintf(payload + offset, payload_size - offset,
-                           "{\"seq\":%lu,\"uid\":\"%s\",\"timestamp\":%llu}",
-                           (unsigned long)entries[i].seq, entries[i].uid,
-                           (unsigned long long)entries[i].timestamp);
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
-    offset += snprintf(payload + offset, payload_size - offset, "]}");
+    return ESP_OK;
+}
 
-    char hmac_hex[65];
-    esp_err_t err = compute_hmac(payload, offset, hmac_hex);
+static esp_err_t send_one_tap(const char *uid, int seq, const char *device_id, char *response_buf, size_t response_buf_size)
+{
+    ESP_LOGI(TAG, "---[REQUEST]--- seq=%d uid=%s device=%s", seq, uid, device_id);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "raw_hex", uid);
+    cJSON_AddStringToObject(root, "device_id", device_id);
+    cJSON_AddNumberToObject(root, "seq", seq);
+    cJSON_AddNullToObject(root, "timestamp");
+    char *json_body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    ESP_LOGI(TAG, "[REQ BODY] %s", json_body);
+
+    char sig_data[512];
+    snprintf(sig_data, sizeof(sig_data), "%d%s", seq, json_body);
+
+    char signature[65];
+    esp_err_t err = compute_hmac(sig_data, strlen(sig_data), signature);
     if (err != ESP_OK) {
-        free(payload);
+        ESP_LOGE(TAG, "[REQ ERR] HMAC failed");
+        free(json_body);
         return err;
     }
+    ESP_LOGI(TAG, "[REQ HMAC] %s", signature);
 
     esp_http_client_config_t cfg = {
         .url = API_URL,
@@ -352,32 +370,33 @@ static esp_err_t send_batch(upload_entry_t *entries, int count)
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
-        free(payload);
+        free(json_body);
         return ESP_FAIL;
     }
 
     esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, HMAC_HEADER, hmac_hex);
-    esp_http_client_set_post_field(client, payload, (int)offset);
+    esp_http_client_set_header(client, HMAC_HEADER, signature);
+    esp_http_client_set_post_field(client, json_body, strlen(json_body));
 
     err = esp_http_client_perform(client);
-
     int status = 0;
     if (err == ESP_OK) {
         status = esp_http_client_get_status_code(client);
+        int content_len = esp_http_client_get_content_length(client);
+        if (content_len > 0 && response_buf && response_buf_size > 0) {
+            int read = esp_http_client_read(client, response_buf, response_buf_size - 1);
+            if (read > 0) response_buf[read] = '\0';
+        }
+        ESP_LOGI(TAG, "---[RESPONSE]--- HTTP %d body=%s", status, response_buf && response_buf[0] ? response_buf : "(empty)");
+    } else {
+        ESP_LOGE(TAG, "---[RESPONSE]--- HTTP FAIL: %s", esp_err_to_name(err));
     }
 
     esp_http_client_cleanup(client);
-    free(payload);
+    free(json_body);
 
-    if (err == ESP_OK && status >= 200 && status < 300) {
+    if (err == ESP_OK && status == 202) {
         return ESP_OK;
-    }
-
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "HTTP request failed: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGW(TAG, "Server returned %d", status);
     }
     return ESP_FAIL;
 }
@@ -409,85 +428,22 @@ static void save_immediate_seq(int seq)
 
 esp_err_t network_send_tap_single(const char *uid)
 {
-    ESP_LOGI(TAG, "[DBG] network_send_tap_single: uid=%s", uid);
-
     EventBits_t bits = xEventGroupGetBits(wifi_event_group);
     if (!(bits & WIFI_CONNECTED_BIT)) {
-        ESP_LOGW(TAG, "[DBG] send_tap_single: WiFi not connected");
+        ESP_LOGW(TAG, "send_tap_single: WiFi not connected");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "[DBG] send_tap_single: WiFi OK");
 
     int seq = load_immediate_seq() + 1;
-    ESP_LOGI(TAG, "[DBG] send_tap_single: seq=%d", seq);
 
     char device_id[32];
     get_device_id(device_id, sizeof(device_id));
-    ESP_LOGI(TAG, "[DBG] send_tap_single: device_id=%s", device_id);
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "raw_hex", uid);
-    cJSON_AddStringToObject(root, "device_id", device_id);
-    cJSON_AddNumberToObject(root, "seq", seq);
-    cJSON_AddNullToObject(root, "timestamp");
-    char *json_body = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    ESP_LOGI(TAG, "[DBG] send_tap_single: json_body=%s", json_body);
-
-    char sig_data[512];
-    snprintf(sig_data, sizeof(sig_data), "%d%s", seq, json_body);
-    ESP_LOGI(TAG, "[DBG] send_tap_single: sig_data len=%zu", strlen(sig_data));
-
-    char signature[65];
-    esp_err_t err = compute_hmac(sig_data, strlen(sig_data), signature);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "[DBG] send_tap_single: HMAC failed");
-        free(json_body);
-        return err;
-    }
-    ESP_LOGI(TAG, "[DBG] send_tap_single: signature=%s", signature);
-
-    esp_http_client_config_t cfg = {
-        .url = API_URL,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = HTTP_TIMEOUT_MS,
-        .max_redirection_count = 5,
-    };
-    ESP_LOGI(TAG, "[DBG] send_tap_single: HTTP config ready");
-
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) {
-        ESP_LOGE(TAG, "[DBG] send_tap_single: http client init failed");
-        free(json_body);
-        return ESP_FAIL;
-    }
-
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, HMAC_HEADER, signature);
-    esp_http_client_set_post_field(client, json_body, strlen(json_body));
-    ESP_LOGI(TAG, "[DBG] send_tap_single: headers set, performing POST");
-
-    err = esp_http_client_perform(client);
-    int status = 0;
+    esp_err_t err = send_one_tap(uid, seq, device_id, NULL, 0);
     if (err == ESP_OK) {
-        status = esp_http_client_get_status_code(client);
-        ESP_LOGI(TAG, "[DBG] send_tap_single: HTTP status=%d", status);
-    } else {
-        ESP_LOGW(TAG, "[DBG] send_tap_single: HTTP error=%s", esp_err_to_name(err));
-    }
-
-    esp_http_client_cleanup(client);
-    free(json_body);
-
-    if (err == ESP_OK && status == 202) {
         save_immediate_seq(seq);
-        ESP_LOGI(TAG, "[DBG] send_tap_single: SUCCESS seq=%d", seq);
-        return ESP_OK;
     }
-
-    ESP_LOGW(TAG, "[DBG] send_tap_single: FAILED (err=%s status=%d)",
-             err == ESP_OK ? "OK" : esp_err_to_name(err), status);
-    return ESP_FAIL;
+    return err;
 }
 
 void upload_task(void *pvParameters)
