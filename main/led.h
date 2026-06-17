@@ -6,9 +6,9 @@
 
 typedef enum {
     LED_PATTERN_BOOT,
-    LED_PATTERN_SUCCESS,
+    LED_PATTERN_TAG,
     LED_PATTERN_FAILURE,
-    LED_PATTERN_OFFLINE,
+    LED_PATTERN_WAVE,
     LED_PATTERN_IDLE,
 } led_pattern_t;
 

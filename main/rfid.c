@@ -167,8 +167,7 @@ void rfid_task(void *pvParameters)
                 if (err == ESP_OK) {
                     ESP_LOGI(TAG, "[DBG] rfid_task: immediate UPLOAD SUCCESS uid=%s", msg.uid);
                     event_log_write(EVT_RFID_READ);
-                    led_send(LED_PATTERN_SUCCESS);
-                    continue;
+                    led_send(LED_PATTERN_TAG);                    continue;
                 }
                 ESP_LOGW(TAG, "[DBG] rfid_task: immediate upload FAILED, saving to local storage");
             } else {
@@ -180,7 +179,7 @@ void rfid_task(void *pvParameters)
             if (err == ESP_OK) {
                 ESP_LOGI(TAG, "[DBG] rfid_task: stored locally seq=%lu uid=%s", (unsigned long)seq, msg.uid);
                 event_log_write(EVT_RFID_READ);
-                led_send(LED_PATTERN_SUCCESS);
+                led_send(LED_PATTERN_TAG);
             } else {
                 ESP_LOGE(TAG, "[DBG] rfid_task: storage failed=%s", esp_err_to_name(err));
                 led_send(LED_PATTERN_FAILURE);

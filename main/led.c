@@ -7,6 +7,15 @@ static const char *TAG = "led";
 
 static QueueHandle_t led_queue = NULL;
 
+#define WAVE_STEPS 40
+
+static const uint8_t wave_pwm[WAVE_STEPS] = {
+    0,  1,  3,  7, 12, 18, 25, 32, 39, 45,
+   49, 52, 54, 54, 53, 50, 46, 40, 34, 27,
+   20, 14,  8,  4,  2,  1,  0,  1,  3,  7,
+   12, 18, 25, 32, 39, 45, 49, 52, 54, 54,
+};
+
 esp_err_t led_init(void)
 {
     gpio_reset_pin(STATUS_LED);
@@ -58,17 +67,17 @@ static void delay_ms(uint32_t ms)
 
 static void play_pattern_boot(void)
 {
-    led_on();  delay_ms(200);
-    led_off(); delay_ms(100);
-    led_on();  delay_ms(200);
-    led_off(); delay_ms(100);
-    led_on();  delay_ms(600);
+    led_on();  delay_ms(500);
+    led_off(); delay_ms(300);
+    led_on();  delay_ms(60);
+    led_off(); delay_ms(40);
+    led_on();  delay_ms(60);
     led_off();
 }
 
-static void play_pattern_success(void)
+static void play_pattern_tag(void)
 {
-    led_on();  delay_ms(300);
+    led_on();  delay_ms(200);
     led_off();
 }
 
@@ -80,10 +89,16 @@ static void play_pattern_failure(void)
     led_off();
 }
 
-static void play_pattern_offline(void)
+static void play_wave_step(int step)
 {
-    led_on();  delay_ms(LED_OFFLINE_PULSE_MS);
-    led_off();
+    int b = wave_pwm[step % WAVE_STEPS];
+    int on_ms = (b * 48) / 54;
+    if (on_ms > 0) {
+        led_on();  delay_ms(on_ms);
+        led_off(); delay_ms(48 - on_ms);
+    } else {
+        led_off(); delay_ms(48);
+    }
 }
 
 void led_task(void *pvParameters)
@@ -95,36 +110,43 @@ void led_task(void *pvParameters)
         return;
     }
 
+    vTaskDelay(pdMS_TO_TICKS(500));
     led_send(LED_PATTERN_BOOT);
 
     led_message_t msg;
-    TickType_t idle_wake = pdMS_TO_TICKS(LED_OFFLINE_PERIOD_MS);
+    int wave_step = 0;
+    bool wave_active = false;
 
     while (1) {
-        BaseType_t received = xQueueReceive(led_queue, &msg, idle_wake);
+        TickType_t timeout = wave_active ? pdMS_TO_TICKS(50) : portMAX_DELAY;
+        BaseType_t received = xQueueReceive(led_queue, &msg, timeout);
 
         if (received == pdTRUE) {
             switch (msg.pattern) {
                 case LED_PATTERN_BOOT:
+                    wave_active = false;
                     play_pattern_boot();
                     break;
-                case LED_PATTERN_SUCCESS:
-                    play_pattern_success();
+                case LED_PATTERN_TAG:
+                    play_pattern_tag();
                     break;
                 case LED_PATTERN_FAILURE:
                     play_pattern_failure();
                     break;
-                case LED_PATTERN_OFFLINE:
-                    play_pattern_offline();
-                    idle_wake = pdMS_TO_TICKS(LED_OFFLINE_PERIOD_MS);
+                case LED_PATTERN_WAVE:
+                    wave_active = true;
+                    wave_step = 0;
                     break;
                 case LED_PATTERN_IDLE:
+                    wave_active = false;
                     led_off();
-                    idle_wake = pdMS_TO_TICKS(LED_OFFLINE_PERIOD_MS);
                     break;
             }
+        } else if (wave_active) {
+            play_wave_step(wave_step);
+            wave_step = (wave_step + 1) % WAVE_STEPS;
         } else {
-            play_pattern_offline();
+            led_off();
         }
     }
 }

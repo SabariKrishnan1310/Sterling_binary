@@ -99,7 +99,7 @@ static esp_err_t perform_ota(const char *firmware_url)
 
     ESP_LOGI(TAG, "OTA successful, restarting...");
     event_log_write(EVT_OTA_SUCCESS);
-    led_send(LED_PATTERN_SUCCESS);
+    led_send(LED_PATTERN_TAG);
 
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();

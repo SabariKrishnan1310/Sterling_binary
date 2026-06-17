@@ -147,7 +147,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
         xEventGroupSetBits(wifi_event_group, WIFI_DISCONNECTED_BIT);
         event_log_write(EVT_WIFI_DISCONNECTED);
-        led_send(LED_PATTERN_OFFLINE);
+        led_send(LED_PATTERN_WAVE);
 
         s_retry_count++;
         if (s_retry_count > 3 && profile_count > 1) {
@@ -163,6 +163,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         xEventGroupClearBits(wifi_event_group, WIFI_DISCONNECTED_BIT);
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
         event_log_write(EVT_WIFI_CONNECTED);
+        led_send(LED_PATTERN_IDLE);
 
         if (!s_time_synced) {
             sync_time();
