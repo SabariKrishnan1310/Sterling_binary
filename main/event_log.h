@@ -1,22 +1,26 @@
 #pragma once
-
-#include <stdint.h>
 #include "esp_err.h"
+#include <stdint.h>
 
 typedef enum {
-    EVT_BOOT             = 0,
-    EVT_WIFI_CONNECTED   = 1,
-    EVT_WIFI_DISCONNECTED = 2,
-    EVT_OTA_STARTED      = 3,
-    EVT_OTA_SUCCESS      = 4,
-    EVT_OTA_FAILED       = 5,
-    EVT_RFID_READ        = 6,
-    EVT_BROWNOUT         = 7,
-    EVT_UPLOAD_SUCCESS   = 8,
-    EVT_UPLOAD_FAILED    = 9,
-    EVT_STORAGE_RECOVERY = 10,
-} event_log_type_t;
+    EVT_WIFI_CONNECTED,
+    EVT_WIFI_DISCONNECTED,
+    EVT_WG_UP,
+    EVT_WG_DOWN,
+    EVT_MQTT_CONNECTED,
+    EVT_MQTT_DISCONNECTED,
+    EVT_PROVISIONING,
+    EVT_PROVISIONED,
+    EVT_TAG_READ,
+    EVT_TAG_SENT,
+    EVT_COMMAND_RECEIVED,
+    EVT_OTA_STARTED,
+    EVT_OTA_SUCCESS,
+    EVT_OTA_FAILED,
+    EVT_ERROR,
+    EVT_REBOOT,
+} event_type_t;
 
 esp_err_t event_log_init(void);
-esp_err_t event_log_write(event_log_type_t event);
-void event_log_dump(void);
+void      event_log_write(event_type_t event);
+void      event_log_dump(void);
