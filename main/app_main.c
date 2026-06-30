@@ -25,6 +25,7 @@
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 #include "nvs_flash.h"
+#include "esp_ota_ops.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
@@ -394,6 +395,9 @@ void app_main(void)
         ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(ret));
         return;
     }
+
+    /* Confirm this firmware is valid to prevent rollback on restart */
+    esp_ota_mark_app_valid_cancel_rollback();
 
     nvs_stl_init();
 

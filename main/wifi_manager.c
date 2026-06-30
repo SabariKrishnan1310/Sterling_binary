@@ -153,6 +153,15 @@ esp_err_t wifi_manager_init(void)
                         IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
 
     load_wifi_list();
+
+    /* Fallback: if no networks configured, use hardcoded default for initial provisioning */
+    if (s_network_count == 0) {
+        ESP_LOGW(TAG, "No wifi networks in NVS, using default credentials for provisioning");
+        strncpy(s_networks[0].ssid, WIFI_DEFAULT_SSID, sizeof(s_networks[0].ssid) - 1);
+        strncpy(s_networks[0].password, WIFI_DEFAULT_PASSWORD, sizeof(s_networks[0].password) - 1);
+        s_network_count = 1;
+    }
+
     s_init_done = true;
     ESP_LOGI(TAG, "WiFi manager initialized");
     return ESP_OK;

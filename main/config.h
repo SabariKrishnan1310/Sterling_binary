@@ -69,6 +69,9 @@
  *  WIFI
  * ========================================================= */
 #define WIFI_CONNECT_TIMEOUT_MS      15000
+/* Fallback credentials for initial provisioning (matching recovery) */
+#define WIFI_DEFAULT_SSID            "JaayM34"
+#define WIFI_DEFAULT_PASSWORD        "manju@2809"
 #define WIFI_LIST_MAX                32
 #define WIFI_SCAN_INTERVAL_MS        30000
 #define WIFI_RECONNECT_INTERVAL_MS   5000
