@@ -8,9 +8,9 @@
  * ========================================================= */
 #define FW_VERSION_MAJOR             2
 #define FW_VERSION_MINOR             0
-#define FW_VERSION_PATCH             1
+#define FW_VERSION_PATCH             2
 #define FW_VERSION_ENCODED           ((FW_VERSION_MAJOR << 16) | (FW_VERSION_MINOR << 8) | FW_VERSION_PATCH)
-#define FW_VERSION_STR               "2.0.1"
+#define FW_VERSION_STR               "2.0.2"
 
 /* =========================================================
  *  PROVISIONING API

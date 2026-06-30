@@ -404,7 +404,7 @@ void app_main(void)
     /* Initialize subsystems */
     event_log_init();
     diagnostics_init();
-    led_controller_task(NULL); /* Will be started as task */
+    led_controller_init();
     ota_manager_init();
     bulk_upload_init();
 
