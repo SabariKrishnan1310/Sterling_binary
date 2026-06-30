@@ -8,9 +8,9 @@
  * ========================================================= */
 #define FW_VERSION_MAJOR             2
 #define FW_VERSION_MINOR             0
-#define FW_VERSION_PATCH             0
+#define FW_VERSION_PATCH             1
 #define FW_VERSION_ENCODED           ((FW_VERSION_MAJOR << 16) | (FW_VERSION_MINOR << 8) | FW_VERSION_PATCH)
-#define FW_VERSION_STR               "2.0.0"
+#define FW_VERSION_STR               "2.0.1"
 
 /* =========================================================
  *  PROVISIONING API
@@ -176,8 +176,8 @@
  *  HMAC
  * ========================================================= */
 #define HMAC_LEN                     32
-/* Dev default; production value provided separately */
-#define HMAC_SECRET_DEFAULT          "super-secret-key-change-me"
+/* Production HMAC secret for device↔server message signing */
+#define HMAC_SECRET_DEFAULT          "8_5IOTuP5zqcl1E8KDdJL2Fv0n5JXuwjdXPOoSoohEYvrM7wAPs9_ij3GiHYJNpzBQe7Sjkoxr_iRbPhwx22iw"
 #define HMAC_SECRET_MAX_LEN          128
 
 /* =========================================================
