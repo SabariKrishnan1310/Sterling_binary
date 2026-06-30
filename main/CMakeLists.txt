@@ -1,26 +1,6 @@
 idf_component_register(
     SRCS
         "app_main.c"
-        "nvs_config.c"
-        "hmac_utils.c"
-        "binary_protocol.c"
-        "wifi_manager.c"
-        "wg_manager.c"
-        "provisioning.c"
-        "mqtt_manager.c"
-        "command_handler.c"
-        "rfid_reader.c"
-        "tap_publisher.c"
-        "telemetry.c"
-        "timesync.c"
-        "diagnostics.c"
-        "bulk_upload.c"
-        "ota_manager.c"
-        "led_controller.c"
-        "event_log.c"
-
-    INCLUDE_DIRS
-        "."
 
     REQUIRES
         nvs_flash
@@ -31,15 +11,8 @@ idf_component_register(
         esp_https_ota
         app_update
         bootloader_support
-        esp_partition
-        esp_timer
-        driver
         spi_flash
         mbedtls
-        efuse
-        json
-        littlefs
-        rc522
-        mqtt
-        esp_wireguard
+        lwip
+        esp_timer
 )
