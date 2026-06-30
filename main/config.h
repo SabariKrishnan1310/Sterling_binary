@@ -171,7 +171,7 @@
 #define NVS_KEY_FW_CHANNEL           "firmware_channel"
 #define NVS_KEY_PROVISIONED          "provisioned"
 #define NVS_KEY_WIFI_LIST            "wifi_list"
-#define NVS_KEY_WIFI_CURRENT_IDX     "wifi_current_index"
+#define NVS_KEY_WIFI_CURRENT_IDX     "wifi_cur_idx"
 #define NVS_KEY_WIFI_LIST_VERSION    "wifi_list_version"
 #define NVS_KEY_HMAC_SECRET          "hmac_secret"
 

@@ -379,6 +379,7 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, " SterlingONE Firmware v" FW_VERSION_STR);
+    ESP_LOGI(TAG, " BUILD: %s %s", __DATE__, __TIME__);
     ESP_LOGI(TAG, "========================================");
 
     /* Initialize NVS */

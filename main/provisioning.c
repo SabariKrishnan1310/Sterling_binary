@@ -3,6 +3,7 @@
 #include "config.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "cJSON.h"
 #include <string.h>
 
@@ -64,6 +65,7 @@ esp_err_t provisioning_call(const char *mac, const char *serial,
         .event_handler = http_event_handler,
         .user_data = &buf,
         .timeout_ms = PROVISIONING_TIMEOUT_MS,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
