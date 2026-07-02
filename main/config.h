@@ -4,7 +4,7 @@
 // STERLING PROD
 // ======================================================
 
-#define FW_VERSION                     "1.0.7"
+#define FW_VERSION                     "1.0.8"
 
 // ======================================================
 // RFID PINS
@@ -27,7 +27,7 @@
 // ======================================================
 
 // Override MAC-based device_id with fixed name (comment out to auto-generate)
-#define DEVICE_ID                      "EUROKIDS-GATE-MAIN"
+#define DEVICE_ID                      "Sterling-Main-Demo"
 
 // Fallback name if MAC generation fails (used when DEVICE_ID not defined)
 #define DEVICE_PREFIX                  "GATE"
