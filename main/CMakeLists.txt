@@ -1,23 +1,22 @@
 idf_component_register(
     SRCS
         "app_main.c"
-        "nvs_config.c"
-        "hmac_utils.c"
-        "binary_protocol.c"
-        "wifi_manager.c"
-        "wg_manager.c"
-        "provisioning.c"
-        "mqtt_manager.c"
-        "command_handler.c"
-        "rfid_reader.c"
-        "tap_publisher.c"
-        "telemetry.c"
-        "timesync.c"
-        "diagnostics.c"
-        "bulk_upload.c"
-        "ota_manager.c"
-        "led_controller.c"
+        "device.c"
+        "rfid.c"
+        "network.c"
+        "provision.c"
+        "storage.c"
+        "ota.c"
+        "led.c"
         "event_log.c"
+        "wireguard.c"
+        "mqtt.c"
+        "heartbeat.c"
+        "telemetry.c"
+        "command_handler.c"
+        "tap_dispatcher.c"
+        "bulk.c"
+        "console.c"
 
     INCLUDE_DIRS
         "."
@@ -40,6 +39,7 @@ idf_component_register(
         json
         littlefs
         rc522
-        mqtt
         esp_wireguard
+        mqtt
+        console
 )

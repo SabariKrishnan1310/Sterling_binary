@@ -150,6 +150,21 @@ esp_err_t storage_append_tap(const char *uid, uint32_t *out_seq)
 
     ESP_LOGI(TAG, "[DBG] append: uid=%s next_seq=%lu", uid, (unsigned long)next_seq);
 
+    if (pending_count >= STORAGE_MAX_RECORDS) {
+        ESP_LOGW(TAG, "Storage full (%lu pending), recycling oldest record",
+                 (unsigned long)pending_count);
+        if (upload_cursor == CURSOR_NONE) {
+            upload_cursor = 0;
+        } else {
+            upload_cursor++;
+        }
+        esp_err_t save_err = save_cursor(upload_cursor);
+        if (save_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to save cursor during recycling");
+        }
+        update_pending_count();
+    }
+
     tap_record_t rec;
     memset(&rec, 0, sizeof(rec));
 

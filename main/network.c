@@ -3,6 +3,8 @@
 #include "event_log.h"
 #include "led.h"
 #include "config.h"
+#include "mqtt.h"
+#include "telemetry.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "esp_wifi.h"
@@ -12,6 +14,7 @@
 #include "esp_efuse.h"
 #include "esp_mac.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "nvs_flash.h"
 #include "mbedtls/md.h"
 #include "cJSON.h"
@@ -23,6 +26,7 @@
 static const char *TAG = "network";
 
 EventGroupHandle_t wifi_event_group = NULL;
+volatile bool upload_force_flag = false;
 
 static int s_retry_count = 0;
 static int s_active_profile = 0;
@@ -121,18 +125,42 @@ static void switch_to_profile(int idx)
     ESP_LOGI(TAG, "Switched to profile %d: SSID=%s", idx, profiles[idx].ssid);
 }
 
+static void on_time_sync(struct timeval *tv)
+{
+    s_time_synced = true;
+    ESP_LOGI(TAG, "Time synchronized");
+}
+
 static void sync_time(void)
 {
     setenv("TZ", "IST-5:30", 1);
     tzset();
 
     esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-    sntp_cfg.wait_for_sync = false;
+    sntp_cfg.wait_for_sync = true;     // creates internal sync semaphore
+    sntp_cfg.sync_cb = on_time_sync;   // callback on sync event
     sntp_cfg.start = true;
     esp_netif_sntp_init(&sntp_cfg);
 
     ESP_LOGI(TAG, "Time sync started (IST timezone)");
-    s_time_synced = true;
+    // s_time_synced set by on_time_sync callback, NOT immediately
+}
+
+void network_wait_for_time_sync(void)
+{
+    if (s_time_synced) {
+        return;  // already synced
+    }
+    ESP_LOGI(TAG, "Waiting for NTP time sync...");
+    esp_err_t err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(15000));
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "NTP sync wait complete");
+    } else if (err == ESP_ERR_TIMEOUT) {
+        ESP_LOGW(TAG, "NTP sync timeout (15s), continuing with unsynced clock");
+    } else {
+        ESP_LOGW(TAG, "NTP sync wait returned %s", esp_err_to_name(err));
+    }
+    // s_time_synced may still be false, but we don't block further
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -351,7 +379,7 @@ static esp_err_t send_one_tap(const char *uid, int seq, const char *device_id, c
     ESP_LOGI(TAG, "[REQ BODY] %s", json_body);
 
     char sig_data[512];
-    snprintf(sig_data, sizeof(sig_data), "%d%s", seq, json_body);
+    snprintf(sig_data, sizeof(sig_data), "%d\n%s", seq, json_body);
 
     char signature[65];
     esp_err_t err = compute_hmac(sig_data, strlen(sig_data), signature);
@@ -367,6 +395,8 @@ static esp_err_t send_one_tap(const char *uid, int seq, const char *device_id, c
         .method = HTTP_METHOD_POST,
         .timeout_ms = HTTP_TIMEOUT_MS,
         .max_redirection_count = 5,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .skip_cert_common_name_check = true,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -435,26 +465,53 @@ esp_err_t network_send_tap_single(const char *uid)
         return ESP_FAIL;
     }
 
-    int seq = load_immediate_seq() + 1;
-
     char device_id[32];
     get_device_id(device_id, sizeof(device_id));
 
+    // PATH 1: MQTT (primary)
+    if (mqtt_is_connected()) {
+        char topic[64];
+        snprintf(topic, sizeof(topic), "tap/%s", device_id);
+        esp_err_t mqtt_err = mqtt_publish(topic, uid, strlen(uid), 1, 0);
+        if (mqtt_err == ESP_OK) {
+            ESP_LOGI(TAG, "Tap via MQTT: %s", uid);
+            telemetry_increment_tags(1);
+            int seq = load_immediate_seq() + 1;
+            save_immediate_seq(seq);
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "MQTT publish failed, falling back to HTTP");
+    }
+
+    // PATH 2: HTTP (fallback)
+    int seq = load_immediate_seq() + 1;
     esp_err_t err = send_one_tap(uid, seq, device_id, NULL, 0);
     if (err == ESP_OK) {
         save_immediate_seq(seq);
+        telemetry_increment_tags(1);
+        return ESP_OK;
     }
-    return err;
+
+    // PATH 3: LittleFS (last resort) — handled by caller
+    return ESP_FAIL;
 }
 
 void upload_task(void *pvParameters)
 {
     upload_entry_t entries[UPLOAD_BATCH_SIZE];
     TickType_t last_upload_tick = xTaskGetTickCount();
+    static const uint32_t BACKOFF_DELAYS[] = {30, 60, 120, 300, 600, 1800, 3600};
+    int backoff_stage = 0;
+    int consecutive_failures = 0;
 
     while (1) {
         esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(1000));
+
+        if (upload_force_flag) {
+            upload_force_flag = false;
+            last_upload_tick = 0;
+        }
 
         EventBits_t bits = xEventGroupGetBits(wifi_event_group);
         if (!(bits & WIFI_CONNECTED_BIT)) {
@@ -497,6 +554,8 @@ void upload_task(void *pvParameters)
 
         esp_err_t upload_err = send_batch(entries, batch_count);
         if (upload_err == ESP_OK) {
+            consecutive_failures = 0;
+            backoff_stage = 0;
             uint32_t last_seq = entries[batch_count - 1].seq;
             esp_err_t mark_err = storage_mark_uploaded(last_seq);
             if (mark_err == ESP_OK) {
@@ -509,8 +568,17 @@ void upload_task(void *pvParameters)
             }
         } else {
             event_log_write(EVT_UPLOAD_FAILED);
-            ESP_LOGW(TAG, "Upload failed, will retry");
-            vTaskDelay(pdMS_TO_TICKS(UPLOAD_RETRY_DELAY_MS));
+            consecutive_failures++;
+            if (consecutive_failures >= sizeof(BACKOFF_DELAYS) / sizeof(BACKOFF_DELAYS[0])) {
+                backoff_stage = sizeof(BACKOFF_DELAYS) / sizeof(BACKOFF_DELAYS[0]) - 1;
+            } else {
+                backoff_stage = consecutive_failures - 1;
+            }
+            if (backoff_stage < 0) backoff_stage = 0;
+            uint32_t delay_s = BACKOFF_DELAYS[backoff_stage];
+            ESP_LOGW(TAG, "Upload failed (%d consecutive), backing off %lus",
+                     consecutive_failures, delay_s);
+            vTaskDelay(pdMS_TO_TICKS(delay_s * 1000));
         }
 
         last_upload_tick = xTaskGetTickCount();
