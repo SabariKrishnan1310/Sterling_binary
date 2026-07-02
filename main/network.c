@@ -3,6 +3,7 @@
 #include "event_log.h"
 #include "led.h"
 #include "config.h"
+#include "provision.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "esp_wifi.h"
@@ -166,7 +167,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         led_send(LED_PATTERN_IDLE);
 
         if (!s_time_synced) {
-            sync_time();
+            // Replace NTP sync with API time + WiFi config
+            esp_err_t cfg_err = wifi_fetch_global_config();
+            if (cfg_err != ESP_OK) {
+                ESP_LOGW(TAG, "API config failed, falling back to NTP");
+                sync_time();  // existing NTP fallback
+            }
         }
     }
 }
@@ -451,6 +457,10 @@ void upload_task(void *pvParameters)
 {
     upload_entry_t entries[UPLOAD_BATCH_SIZE];
     TickType_t last_upload_tick = xTaskGetTickCount();
+    
+    // Circuit breaker state
+    static uint32_t upload_backoff_ms = 30000;
+    static uint32_t consecutive_failures = 0;
 
     while (1) {
         esp_task_wdt_reset();
@@ -462,7 +472,7 @@ void upload_task(void *pvParameters)
         }
 
         TickType_t now = xTaskGetTickCount();
-        if ((now - last_upload_tick) < pdMS_TO_TICKS(UPLOAD_INTERVAL_MS)) {
+        if ((now - last_upload_tick) < pdMS_TO_TICKS(upload_backoff_ms)) {
             continue;
         }
 
@@ -507,10 +517,21 @@ void upload_task(void *pvParameters)
                 ESP_LOGE(TAG, "Failed to save upload cursor: %s",
                          esp_err_to_name(mark_err));
             }
+            // Circuit breaker: success = reset
+            consecutive_failures = 0;
+            upload_backoff_ms = 30000;
         } else {
             event_log_write(EVT_UPLOAD_FAILED);
-            ESP_LOGW(TAG, "Upload failed, will retry");
-            vTaskDelay(pdMS_TO_TICKS(UPLOAD_RETRY_DELAY_MS));
+            // Circuit breaker: exponential backoff
+            consecutive_failures++;
+            upload_backoff_ms = (consecutive_failures <= 1) ? 30000 :
+                                (consecutive_failures <= 3) ? 60000 :
+                                (consecutive_failures <= 5) ? 120000 :
+                                (consecutive_failures <= 7) ? 300000 :
+                                (consecutive_failures <= 10) ? 600000 :
+                                3600000;
+            ESP_LOGW(TAG, "Upload failed (%lu consecutive), backoff: %lums",
+                     consecutive_failures, upload_backoff_ms);
         }
 
         last_upload_tick = xTaskGetTickCount();

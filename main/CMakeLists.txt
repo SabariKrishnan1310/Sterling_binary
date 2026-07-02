@@ -7,6 +7,7 @@ idf_component_register(
         "ota.c"
         "led.c"
         "event_log.c"
+        "provision.c"
 
     INCLUDE_DIRS
         "."

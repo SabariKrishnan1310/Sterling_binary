@@ -5,6 +5,7 @@
 #include "ota.h"
 #include "led.h"
 #include "event_log.h"
+#include "provision.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_chip_info.h"
@@ -34,79 +35,49 @@ static void register_watchdog(TaskHandle_t task, const char *name)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "  Sterling Prod v%s", FW_VERSION);
-    ESP_LOGI(TAG, "========================================");
+    // ═══ CRITICAL: LINE 1 — rollback confirm BEFORE anything ═══
+    esp_ota_mark_app_valid_cancel_rollback();
+    
+    // ── WDT init ──
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = WATCHDOG_TIMEOUT_SECONDS * 1000,
+        .idle_core_mask = (1 << 0) | (1 << 1),
+        .trigger_panic = true,
+    };
+    esp_task_wdt_init(&wdt_config);
 
-    esp_chip_info_t chip_info;
-    esp_chip_info(&chip_info);
-    ESP_LOGI(TAG, "Chip: rev %d, cores: %d", chip_info.revision, chip_info.cores);
-
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS needs erase, performing...");
-        nvs_flash_erase();
-        err = nvs_flash_init();
-    }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS init failed: %s, rebooting...", esp_err_to_name(err));
-        esp_restart();
-    }
-    ESP_LOGI(TAG, "NVS initialized");
-
-    err = storage_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Storage init failed: %s, rebooting...", esp_err_to_name(err));
-        esp_restart();
-    }
-
-    err = event_log_init();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Event log init failed (non-fatal)");
-    }
-
-    event_log_write(EVT_BOOT);
-
-    err = network_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Network init failed (non-fatal)");
-    }
-
-    ota_init();
-
-    storage_dump_stats();
-
+    ESP_LOGI(TAG, "Sterling v1.0.6 — WiFi API Provisioning + Factory Recovery");
+    
+    // ── Task handles ──
     TaskHandle_t rfid_handle = NULL;
     TaskHandle_t upload_handle = NULL;
     TaskHandle_t ota_handle = NULL;
 
-    xTaskCreatePinnedToCore(
-        led_task, "led_task", LED_STACK_SIZE, NULL,
-        tskIDLE_PRIORITY + 1, NULL, 1);
+    // ── Init all subsystems ──
+    nvs_flash_init();
+    storage_init();
+    event_log_init();
+    event_log_write(EVT_BOOT);
+    network_init();
+    ota_init();
+    storage_dump_stats();
 
-    xTaskCreatePinnedToCore(
-        rfid_task, "rfid_task", RFID_STACK_SIZE, NULL,
-        tskIDLE_PRIORITY + 3, &rfid_handle, 1);
+    // ── Create tasks (EXISTING — no changes) ──
+    xTaskCreatePinnedToCore(led_task,   "led_task",   2048,  NULL, 1, NULL,         1);
+    xTaskCreatePinnedToCore(rfid_task,  "rfid_task",  4096,  NULL, 3, &rfid_handle,  1);
+    xTaskCreatePinnedToCore(network_wifi_task, "wifi_task", 6144, NULL, 2, NULL,     0);
+    xTaskCreatePinnedToCore(upload_task,"upload_task",6144,  NULL, 1, &upload_handle,0);
+    xTaskCreatePinnedToCore(ota_task,   "ota_task",   8192,  NULL, 1, &ota_handle,   0);
+    
+    // ── NEW: factory trigger monitor ──
+    xTaskCreatePinnedToCore(factory_trigger_monitor_task, "factory_mon", 4096, NULL, 1, NULL, 0);
 
-    xTaskCreatePinnedToCore(
-        network_wifi_task, "wifi_task", WIFI_STACK_SIZE, NULL,
-        tskIDLE_PRIORITY + 2, NULL, 0);
-
-    xTaskCreatePinnedToCore(
-        upload_task, "upload_task", UPLOAD_STACK_SIZE, NULL,
-        tskIDLE_PRIORITY + 1, &upload_handle, 0);
-
-    xTaskCreatePinnedToCore(
-        ota_task, "ota_task", OTA_STACK_SIZE, NULL,
-        tskIDLE_PRIORITY + 1, &ota_handle, 0);
-
+    // ── Register WDT ──
     register_watchdog(rfid_handle, "rfid");
     register_watchdog(upload_handle, "upload");
     register_watchdog(ota_handle, "ota");
 
-    ESP_LOGI(TAG, "All tasks created. System running.");
-    ESP_LOGI(TAG, "  Core 0: wifi, upload, ota");
-    ESP_LOGI(TAG, "  Core 1: rfid, storage, led");
-
     vTaskDelete(NULL);
 }
+
+

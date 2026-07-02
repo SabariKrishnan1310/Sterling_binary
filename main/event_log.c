@@ -30,7 +30,12 @@ static const char *event_names[] = {
     "BOOT", "WIFI_CONNECTED", "WIFI_DISCONNECTED",
     "OTA_STARTED", "OTA_SUCCESS", "OTA_FAILED",
     "RFID_READ", "BROWNOUT", "UPLOAD_SUCCESS", "UPLOAD_FAILED",
-    "STORAGE_RECOVERY"
+    "STORAGE_RECOVERY",
+    "WIFI_CONFIG_FETCHED",
+    "FACTORY_RESET",
+    "CRASH_DETECTED",
+    "FACTORY_TRIGGERED",
+    "STORAGE_RECYCLE",
 };
 
 esp_err_t event_log_init(void)

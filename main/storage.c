@@ -150,6 +150,29 @@ esp_err_t storage_append_tap(const char *uid, uint32_t *out_seq)
 
     ESP_LOGI(TAG, "[DBG] append: uid=%s next_seq=%lu", uid, (unsigned long)next_seq);
 
+    // ── Storage overflow protection ──
+    update_pending_count();
+    if (pending_count >= STORAGE_MAX_RECORDS) {
+        ESP_LOGW(TAG, "Storage full (%lu records). Recycling oldest...", pending_count);
+        event_log_write(EVT_STORAGE_RECYCLE);
+        nvs_handle_t nvs;
+        if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+            uint32_t cursor;
+            if (nvs_get_u32(nvs, NVS_KEY_CURSOR, &cursor) != ESP_OK) {
+                cursor = CURSOR_NONE;
+            }
+            if (cursor == CURSOR_NONE) {
+                cursor = next_seq;  // skip to end
+            } else {
+                cursor++;
+            }
+            nvs_set_u32(nvs, NVS_KEY_CURSOR, cursor);
+            nvs_commit(nvs);
+            nvs_close(nvs);
+        }
+        upload_cursor = cursor;
+    }
+
     tap_record_t rec;
     memset(&rec, 0, sizeof(rec));
 

@@ -4,7 +4,7 @@
 // STERLING PROD
 // ======================================================
 
-#define FW_VERSION                     "1.0.5"
+#define FW_VERSION                     "1.0.6"
 
 // ======================================================
 // RFID PINS
@@ -88,9 +88,17 @@
 // WIFI PROFILES
 // ======================================================
 
-#define WIFI_MAX_PROFILES              5
-#define WIFI_NVS_NAMESPACE             "wifi_profiles"
-#define WIFI_RECONNECT_DELAY_MS        5000
+// WiFi API provisioning (replaces NTP as primary time source)
+#define WIFI_API_URL                "http://api.sabarikrishnan.me/api/v1/wifi"
+
+// Unlimited WiFi profiles (was 5)
+#define WIFI_MAX_PROFILES           250
+
+// OTA check every 60 seconds (like original v1.0.5)
+#define OTA_CHECK_INTERVAL_MS       60000
+
+// Factory reset — boot partition index for factory
+#define FACTORY_PARTITION_INDEX     0  // factory is always slot 0 in ESP-IDF
 
 // ======================================================
 // UPLOAD

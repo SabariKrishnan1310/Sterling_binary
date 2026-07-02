@@ -173,6 +173,41 @@ esp_err_t ota_init(void)
     return ESP_OK;
 }
 
+static esp_err_t ota_perform_with_retries(void)
+{
+    const char *urls[] = {
+        OTA_FIRMWARE_URL,                          // Attempt 1: Primary
+        OTA_FALLBACK_URL,                          // Attempt 2: Fallback from config
+        OTA_FIRMWARE_URL,                          // Attempt 3: Primary again
+    };
+    
+    size_t num_urls = sizeof(urls) / sizeof(urls[0]);
+    
+    for (int attempt = 0; attempt < num_urls; attempt++) {
+        // Skip empty fallback URL
+        if (strlen(urls[attempt]) == 0) continue;
+        
+        ESP_LOGI(TAG, "OTA attempt %d/%d from: %s", attempt + 1, num_urls, urls[attempt]);
+        
+        esp_err_t err = perform_ota(urls[attempt]);
+        if (err == ESP_OK) {
+            return ESP_OK;  // Success — should never reach here (reboot happens in perform_ota)
+        }
+        
+        ESP_LOGW(TAG, "OTA attempt %d failed: %s", attempt + 1, esp_err_to_name(err));
+        
+        // 5s delay between attempts (except after last)
+        if (attempt < num_urls - 1) {
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
+    }
+    
+    ESP_LOGE(TAG, "All %d OTA attempts failed", num_urls);
+    event_log_write(EVT_OTA_FAILED);
+    led_send(LED_PATTERN_FAILURE);
+    return ESP_FAIL;
+}
+
 void ota_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "[DBG] ota_task: starting...");
@@ -189,6 +224,13 @@ void ota_task(void *pvParameters)
                 ESP_LOGI(TAG, "[DBG] ota_task: check OK (up to date or updated)");
             } else {
                 ESP_LOGW(TAG, "[DBG] ota_task: check returned %s", esp_err_to_name(err));
+                // If check indicates update needed but failed, retry with 3-attempt chain
+                if (err == ESP_ERR_INVALID_VERSION) {
+                    err = ota_perform_with_retries();
+                    if (err != ESP_OK) {
+                        ESP_LOGE(TAG, "All OTA retries failed, will retry in 60s");
+                    }
+                }
             }
         } else {
             ESP_LOGD(TAG, "[DBG] ota_task: WiFi not connected, skipping");

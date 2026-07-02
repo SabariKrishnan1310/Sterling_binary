@@ -14,7 +14,12 @@ typedef enum {
     EVT_BROWNOUT         = 7,
     EVT_UPLOAD_SUCCESS   = 8,
     EVT_UPLOAD_FAILED    = 9,
-    EVT_STORAGE_RECOVERY = 10,
+    EVT_STORAGE_RECOVERY  = 10,
+    EVT_WIFI_CONFIG_FETCHED = 11,
+    EVT_FACTORY_RESET       = 12,
+    EVT_CRASH_DETECTED      = 13,
+    EVT_FACTORY_TRIGGERED   = 14,
+    EVT_STORAGE_RECYCLE     = 15,
 } event_log_type_t;
 
 esp_err_t event_log_init(void);

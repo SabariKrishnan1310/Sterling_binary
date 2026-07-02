@@ -137,6 +137,11 @@ void led_task(void *pvParameters)
                     wave_active = true;
                     wave_step = 0;
                     break;
+                case LED_PATTERN_READY:
+                    wave_active = false;
+                    led_on();  delay_ms(100);
+                    led_off();
+                    break;
                 case LED_PATTERN_IDLE:
                     wave_active = false;
                     led_off();

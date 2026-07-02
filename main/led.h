@@ -10,6 +10,7 @@ typedef enum {
     LED_PATTERN_FAILURE,
     LED_PATTERN_WAVE,
     LED_PATTERN_IDLE,
+    LED_PATTERN_READY,
 } led_pattern_t;
 
 typedef struct {
