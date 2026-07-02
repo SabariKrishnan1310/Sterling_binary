@@ -80,9 +80,14 @@ static esp_err_t perform_ota(const char *firmware_url)
     event_log_write(EVT_OTA_STARTED);
     led_send(LED_PATTERN_BOOT);
 
+    // Remove ourselves from WDT — OTA download + SHA256 verification
+    // can take 30-60+ seconds, which exceeds the WDT timeout
+    esp_task_wdt_delete(xTaskGetCurrentTaskHandle());
+    ESP_LOGI(TAG, "Removed OTA task from WDT for download");
+
     esp_http_client_config_t cfg = {
         .url = firmware_url,
-        .timeout_ms = 60000,
+        .timeout_ms = 120000,
         .keep_alive_enable = false,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = true,
@@ -93,6 +98,10 @@ static esp_err_t perform_ota(const char *firmware_url)
     };
 
     esp_err_t err = esp_https_ota(&ota_cfg);
+
+    // Re-add ourselves to WDT
+    esp_task_wdt_add(xTaskGetCurrentTaskHandle());
+
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(err));
         event_log_write(EVT_OTA_FAILED);
