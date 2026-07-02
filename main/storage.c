@@ -156,21 +156,21 @@ esp_err_t storage_append_tap(const char *uid, uint32_t *out_seq)
         ESP_LOGW(TAG, "Storage full (%lu records). Recycling oldest...", pending_count);
         event_log_write(EVT_STORAGE_RECYCLE);
         nvs_handle_t nvs;
+        uint32_t recycle_cursor;
         if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
-            uint32_t cursor;
-            if (nvs_get_u32(nvs, NVS_KEY_CURSOR, &cursor) != ESP_OK) {
-                cursor = CURSOR_NONE;
+            if (nvs_get_u32(nvs, NVS_KEY_CURSOR, &recycle_cursor) != ESP_OK) {
+                recycle_cursor = CURSOR_NONE;
             }
-            if (cursor == CURSOR_NONE) {
-                cursor = next_seq;  // skip to end
+            if (recycle_cursor == CURSOR_NONE) {
+                recycle_cursor = next_seq;  // skip to end
             } else {
-                cursor++;
+                recycle_cursor++;
             }
-            nvs_set_u32(nvs, NVS_KEY_CURSOR, cursor);
+            nvs_set_u32(nvs, NVS_KEY_CURSOR, recycle_cursor);
             nvs_commit(nvs);
             nvs_close(nvs);
         }
-        upload_cursor = cursor;
+        upload_cursor = recycle_cursor;
     }
 
     tap_record_t rec;

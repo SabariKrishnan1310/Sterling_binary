@@ -52,7 +52,11 @@
 #define OTA_FIRMWARE_URL \
 "https://raw.githubusercontent.com/SabariKrishnan1310/Sterling_binary/main/firmware.bin"
 
-#define OTA_CHECK_INTERVAL_MS          10000
+#define OTA_FALLBACK_URL \
+""
+
+// OTA check every 60 seconds
+#define OTA_CHECK_INTERVAL_MS          60000
 
 // ======================================================
 // NETWORK
@@ -94,8 +98,12 @@
 // Unlimited WiFi profiles (was 5)
 #define WIFI_MAX_PROFILES           250
 
-// OTA check every 60 seconds (like original v1.0.5)
+// OTA check every 60 seconds
 #define OTA_CHECK_INTERVAL_MS       60000
+
+// WiFi NVS namespace and reconnect delay
+#define WIFI_NVS_NAMESPACE             "wifi_profiles"
+#define WIFI_RECONNECT_DELAY_MS        5000
 
 // Factory reset — boot partition index for factory
 #define FACTORY_PARTITION_INDEX     0  // factory is always slot 0 in ESP-IDF

@@ -8,6 +8,9 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_timer.h"
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <sys/time.h>
 #include <string.h>
 
@@ -174,9 +177,9 @@ void factory_reset(void)
     while (1) {
         // hardware SOS blink
         for (int i = 0; i < 3; i++) {
-            gpio_set_level(GPIO_NUM_27, 1);
+            gpio_set_level(STATUS_LED, 1);
             vTaskDelay(100 / portTICK_PERIOD_MS);
-            gpio_set_level(GPIO_NUM_27, 0);
+            gpio_set_level(STATUS_LED, 0);
             vTaskDelay(100 / portTICK_PERIOD_MS);
         }
         vTaskDelay(700 / portTICK_PERIOD_MS);
@@ -220,8 +223,8 @@ void factory_trigger_monitor_task(void *pvParameters)
     if (now < CRASH_WINDOW_MS) {
         // Within the window — check count
         if (crash_count >= MAX_CRASHES) {
-            ESP_LOGE(TAG, "⚠️  %d crashes in %dms — triggering factory recovery!",
-                     crash_count, now);
+            ESP_LOGE(TAG, "⚠️  %lu crashes in %lums — triggering factory recovery!",
+                     (unsigned long)crash_count, (unsigned long)now);
             nvs_close(nvs);
             factory_reset();
             return;  // never reaches here
@@ -252,5 +255,5 @@ void factory_register_crash(void)
     nvs_commit(nvs);
     nvs_close(nvs);
     
-    ESP_LOGE(TAG, "Crash #%d registered", crash_count);
+    ESP_LOGE(TAG, "Crash #%lu registered", (unsigned long)crash_count);
 }

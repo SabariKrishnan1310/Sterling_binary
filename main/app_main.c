@@ -8,6 +8,7 @@
 #include "provision.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_ota_ops.h"
 #include "esp_chip_info.h"
 #include "nvs_flash.h"
 #include "esp_task_wdt.h"
@@ -62,12 +63,12 @@ void app_main(void)
     ota_init();
     storage_dump_stats();
 
-    // ── Create tasks (EXISTING — no changes) ──
-    xTaskCreatePinnedToCore(led_task,   "led_task",   2048,  NULL, 1, NULL,         1);
-    xTaskCreatePinnedToCore(rfid_task,  "rfid_task",  4096,  NULL, 3, &rfid_handle,  1);
-    xTaskCreatePinnedToCore(network_wifi_task, "wifi_task", 6144, NULL, 2, NULL,     0);
-    xTaskCreatePinnedToCore(upload_task,"upload_task",6144,  NULL, 1, &upload_handle,0);
-    xTaskCreatePinnedToCore(ota_task,   "ota_task",   8192,  NULL, 1, &ota_handle,   0);
+    // ── Create tasks ──
+    xTaskCreatePinnedToCore(led_task,   "led_task",   LED_STACK_SIZE,  NULL, 1, NULL,         1);
+    xTaskCreatePinnedToCore(rfid_task,  "rfid_task",  RFID_STACK_SIZE, NULL, 3, &rfid_handle,  1);
+    xTaskCreatePinnedToCore(network_wifi_task, "wifi_task", WIFI_STACK_SIZE, NULL, 2, NULL,     0);
+    xTaskCreatePinnedToCore(upload_task,"upload_task", UPLOAD_STACK_SIZE, NULL, 1, &upload_handle,0);
+    xTaskCreatePinnedToCore(ota_task,   "ota_task",   OTA_STACK_SIZE,  NULL, 1, &ota_handle,   0);
     
     // ── NEW: factory trigger monitor ──
     xTaskCreatePinnedToCore(factory_trigger_monitor_task, "factory_mon", 4096, NULL, 1, NULL, 0);

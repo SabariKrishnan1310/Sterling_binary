@@ -4,6 +4,6 @@
 #define OTA_FIRMWARE_URL "https://raw.githubusercontent.com/SabariKrishnan1310/Sterling_binary/main/firmware.bin"
 #define OTA_FALLBACK_URL ""
 #define WIFI_CONNECT_TIMEOUT_MS 15000
-#define HTTP_TIMEOUT_MS 8000
+#define HTTP_TIMEOUT_MS 4000
 #define STATUS_LED 27
 #define WIFI_MAX_PROFILES 250

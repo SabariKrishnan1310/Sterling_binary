@@ -15,3 +15,14 @@ esp_err_t wifi_fetch_global_config(void);
  * which re-provisions everything fresh from GitHub.
  */
 void factory_reset(void);
+
+/**
+ * Factory trigger monitor task — checks crash loop detection on boot.
+ * If >= 5 crashes within 10 minutes, triggers factory recovery.
+ */
+void factory_trigger_monitor_task(void *pvParameters);
+
+/**
+ * Register a crash before reboot. Increments NVS crash counter.
+ */
+void factory_register_crash(void);
