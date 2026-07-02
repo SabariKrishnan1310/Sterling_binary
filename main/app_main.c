@@ -45,9 +45,10 @@ void app_main(void)
         .idle_core_mask = (1 << 0) | (1 << 1),
         .trigger_panic = true,
     };
+    // TWDT may already be initialized by IDF startup — ignore error
     esp_task_wdt_init(&wdt_config);
 
-    ESP_LOGI(TAG, "Sterling v1.0.6 — WiFi API Provisioning + Factory Recovery");
+    ESP_LOGI(TAG, "Sterling v%s — WiFi API Provisioning + Factory Recovery", FW_VERSION);
     
     // ── Task handles ──
     TaskHandle_t rfid_handle = NULL;

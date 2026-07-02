@@ -136,6 +136,20 @@ static void sync_time(void)
     s_time_synced = true;
 }
 
+static void config_fetch_task(void *pvParameters)
+{
+    s_time_synced = true;
+    ESP_LOGI(TAG, "Config fetch task started");
+
+    esp_err_t cfg_err = wifi_fetch_global_config();
+    if (cfg_err != ESP_OK) {
+        ESP_LOGW(TAG, "API config failed, falling back to NTP");
+        sync_time();
+    }
+
+    vTaskDelete(NULL);
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                 int32_t event_id, void *event_data)
 {
@@ -166,13 +180,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         event_log_write(EVT_WIFI_CONNECTED);
         led_send(LED_PATTERN_IDLE);
 
+        // Spawn a one-shot task for config fetch (8KB stack, safe)
         if (!s_time_synced) {
-            // Replace NTP sync with API time + WiFi config
-            esp_err_t cfg_err = wifi_fetch_global_config();
-            if (cfg_err != ESP_OK) {
-                ESP_LOGW(TAG, "API config failed, falling back to NTP");
-                sync_time();  // existing NTP fallback
-            }
+            xTaskCreatePinnedToCore(config_fetch_task, "cfg_fetch", 8192, NULL, 1, NULL, 0);
         }
     }
 }

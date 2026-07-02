@@ -63,8 +63,11 @@ static esp_err_t http_fetch_to_buffer(const char *url, char *buf, size_t buf_siz
 
 static int parse_version(const char *version_str)
 {
+    // Skip 'v' prefix if present
+    const char *p = version_str;
+    while (*p == 'v' || *p == 'V') p++;
     int major = 0, minor = 0, patch = 0;
-    if (sscanf(version_str, "%d.%d.%d", &major, &minor, &patch) >= 1) {
+    if (sscanf(p, "%d.%d.%d", &major, &minor, &patch) >= 1) {
         return major * 10000 + minor * 100 + patch;
     }
     return -1;
@@ -237,6 +240,10 @@ void ota_task(void *pvParameters)
         }
 
         ESP_LOGD(TAG, "[DBG] ota_task: sleeping %dms", OTA_CHECK_INTERVAL_MS);
-        vTaskDelay(pdMS_TO_TICKS(OTA_CHECK_INTERVAL_MS));
+        // Sleep in 1-second chunks so WDT stays fed
+        for (int i = 0; i < OTA_CHECK_INTERVAL_MS / 1000; i++) {
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
     }
 }

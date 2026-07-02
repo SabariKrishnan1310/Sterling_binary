@@ -11,6 +11,7 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 #include <sys/time.h>
 #include <string.h>
 
@@ -25,52 +26,66 @@ esp_err_t wifi_fetch_global_config(void)
     
     esp_http_client_config_t cfg = {
         .url = WIFI_API_URL,
-        .method = HTTP_METHOD_GET,
         .timeout_ms = HTTP_TIMEOUT_MS,
         .skip_cert_common_name_check = true,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return ESP_FAIL;
+    if (!client) {
+        ESP_LOGE(TAG, "HTTP client init failed");
+        return ESP_FAIL;
+    }
 
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open HTTP: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "HTTP open: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
         return err;
     }
 
     esp_http_client_fetch_headers(client);
     int status = esp_http_client_get_status_code(client);
-
     if (status != 200) {
         ESP_LOGE(TAG, "Bad HTTP status: %d", status);
         esp_http_client_cleanup(client);
         return ESP_FAIL;
     }
 
-    char buf[4096] = {0};
+    // Read response into heap-allocated buffer (NOT stack!)
+    int content_len = esp_http_client_get_content_length(client);
+    if (content_len <= 0) content_len = 4096;
+    if (content_len > 4096) content_len = 4096;
+
+    char *buf = heap_caps_malloc(content_len + 1, MALLOC_CAP_DEFAULT | MALLOC_CAP_8BIT);
+    if (!buf) {
+        ESP_LOGE(TAG, "Failed to alloc response buffer (%d bytes)", content_len);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+
     int total = 0;
     int r;
-    while ((r = esp_http_client_read(client, buf + total, sizeof(buf) - total - 1)) > 0) {
+    while ((r = esp_http_client_read(client, buf + total, content_len - total)) > 0) {
         total += r;
-        if (total >= (int)sizeof(buf) - 2) break;
+        if (total >= content_len) break;
     }
     buf[total] = '\0';
     esp_http_client_cleanup(client);
 
     if (total == 0) {
         ESP_LOGE(TAG, "Empty response");
+        heap_caps_free(buf);
         return ESP_FAIL;
     }
 
-    cJSON *json = cJSON_Parse(buf);
+    cJSON *json = cJSON_ParseWithLength(buf, total);
+    heap_caps_free(buf);
     if (!json) {
         ESP_LOGE(TAG, "JSON parse failed");
         return ESP_FAIL;
     }
 
-    // ── Extract and set IST time (PRIMARY time source, replaces NTP) ──
+    // Extract and set IST time (PRIMARY time source, replaces NTP)
     cJSON *ts_item = cJSON_GetObjectItemCaseSensitive(json, "timestamp");
     if (cJSON_IsNumber(ts_item)) {
         time_t server_ts = (time_t)ts_item->valuedouble;
@@ -78,28 +93,24 @@ esp_err_t wifi_fetch_global_config(void)
         settimeofday(&tv, NULL);
         setenv("TZ", "IST-5:30", 1);
         tzset();
-        ESP_LOGI(TAG, "✅ Time synced from API: %lld", (long long)server_ts);
+        ESP_LOGI(TAG, "Time synced from API: %lld", (long long)server_ts);
     } else {
-        ESP_LOGW(TAG, "No timestamp in API response — NTP fallback needed");
+        ESP_LOGW(TAG, "No timestamp in API response");
     }
 
-    // ── Extract WiFi networks (UNLIMITED — store ALL of them) ──
+    // Extract WiFi networks
     cJSON *networks = cJSON_GetObjectItemCaseSensitive(json, "networks");
     if (cJSON_IsArray(networks)) {
         nvs_handle_t nvs;
         esp_err_t nvs_err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs);
         
         if (nvs_err == ESP_OK) {
-            // Erase old profiles
             nvs_erase_all(nvs);
             
             int count = 0;
             cJSON *net;
             cJSON_ArrayForEach(net, networks) {
-                if (count >= WIFI_MAX_PROFILES) {
-                    ESP_LOGW(TAG, "Reached max %d profiles, stopping", WIFI_MAX_PROFILES);
-                    break;
-                }
+                if (count >= WIFI_MAX_PROFILES) break;
                 
                 cJSON *ssid = cJSON_GetObjectItemCaseSensitive(net, "ssid");
                 cJSON *pwd  = cJSON_GetObjectItemCaseSensitive(net, "password");
@@ -118,7 +129,7 @@ esp_err_t wifi_fetch_global_config(void)
             nvs_commit(nvs);
             nvs_close(nvs);
             
-            ESP_LOGI(TAG, "✅ Stored %d WiFi profiles from API", count);
+            ESP_LOGI(TAG, "Stored %d WiFi profiles from API", count);
         } else {
             ESP_LOGE(TAG, "NVS open failed: %s", esp_err_to_name(nvs_err));
         }
