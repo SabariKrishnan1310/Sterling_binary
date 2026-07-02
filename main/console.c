@@ -94,30 +94,6 @@ static void uart_read_no_echo(char *buf, size_t len)
     buf[pos] = '\0';
 }
 
-// Emergency hatch: detect "AT\r" or "AT\n" on UART — clears the flood
-static bool wait_for_console_trigger(void)
-{
-    int pos = 0;  // match state: 0=expecting 'A', 1=expecting 'T'
-    while (1) {
-        char c;
-        int r = uart_read_bytes(UART_NUM_0, &c, 1, pdMS_TO_TICKS(200));
-        if (r != 1) {
-            pos = 0;  // timeout resets match
-            continue;
-        }
-        if (c == 'A' && pos == 0) {
-            pos = 1;
-        } else if (c == 'T' && pos == 1) {
-            pos = 2;
-        } else if ((c == '\r' || c == '\n') && pos == 2) {
-            printf("\r\n>>> Emergency console hatch activated <<<\r\n");
-            return true;
-        } else {
-            pos = (c == 'A') ? 1 : 0;
-        }
-    }
-}
-
 static bool authenticate(void)
 {
     load_password();
@@ -134,7 +110,7 @@ static bool authenticate(void)
             s_failed_attempts = 0;
         }
 
-        printf("\r\nSterling Edge v2.0\r\nPassword: ");
+        printf("\r\nPassword: ");
         fflush(stdout);
 
         char pw[64];
@@ -157,6 +133,8 @@ static bool authenticate(void)
         }
     }
 }
+
+
 
 // ================================================================
 // HELPERS
@@ -1345,52 +1323,85 @@ void console_task(void *pvParameters)
         vTaskDelete(NULL);
     }
 
-    ESP_LOGI(TAG, "Console task started — type AT+Enter for emergency access");
+    ESP_LOGI(TAG, "Console task started");
+    load_password();
 
-    // Outer loop: never exits. After lockout or Ctrl+C, returns here.
-    while (1) {
-        // Show emergency hatch banner (visible even in debug flood)
-        printf("\r\n");
-        printf("========================================\r\n");
-        printf("  Sterling Edge v2.0  Console Access\r\n");
-        printf("  Type AT + Enter for emergency hatch\r\n");
-        printf("========================================\r\n");
+    // 10-second boot window: show prompt, accept password
+    printf("\r\n========================================\r\n");
+    printf("  Sterling Edge v2.0  Console Access\r\n");
+    printf("  Password: ");
+    fflush(stdout);
 
-        // Wait for the emergency trigger sequence: AT + Enter
-        wait_for_console_trigger();
+    char pw[64] = {0};
+    int pos = 0;
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(10000);
 
-        // Now ask for password
-        if (!authenticate()) {
-            ESP_LOGW(TAG, "Authentication failed, restarting hatch...");
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            continue;
-        }
-
-        printf("\r\nType 'help' for available commands.\r\n");
-
-        // Command loop — Ctrl+C or empty input breaks back to hatch
-        while (1) {
-            char *line = linenoise("> ");
-            if (line == NULL) {
-                // Ctrl+C or EOF — return to emergency hatch banner
-                printf("\r\nReturning to hatch. Type AT+Enter to re-enter.\r\n");
-                break;
-            }
-
-            if (strlen(line) > 0) {
-                linenoiseHistoryAdd(line);
-                int ret;
-                esp_err_t e = esp_console_run(line, &ret);
-                if (e == ESP_ERR_NOT_FOUND) {
-                    printf("Unrecognized command: %s\r\n", line);
-                } else if (e == ESP_ERR_INVALID_ARG) {
-                } else if (e != ESP_OK) {
-                    printf("Command error: %s\r\n", esp_err_to_name(e));
+    while (xTaskGetTickCount() < deadline) {
+        char c;
+        int r = uart_read_bytes(UART_NUM_0, &c, 1, pdMS_TO_TICKS(100));
+        if (r == 1) {
+            if (c == '\r' || c == '\n') {
+                pw[pos] = '\0';
+                if (pos > 0 && strcmp(pw, s_console_pw) == 0) {
+                    printf("\r\nAccess granted.\r\n");
+                    goto command_loop;
                 }
+                printf("\r\nWrong. Password: ");
+                pos = 0;
+                memset(pw, 0, sizeof(pw));
+                fflush(stdout);
+            } else if (c == '\b' || c == 127) {
+                if (pos > 0) { pos--; pw[pos] = 0; printf("\b \b"); fflush(stdout); }
+            } else if (pos < (int)sizeof(pw) - 1) {
+                pw[pos++] = c;
+                printf("*");
+                fflush(stdout);
             }
-
-            linenoiseFree(line);
-            vTaskDelay(pdMS_TO_TICKS(10));
         }
     }
+    printf("\r\nContinuing silently. Type AT+Enter anytime.\r\n");
+    printf("========================================\r\n");
+
+    // Silent mode: AT+Enter triggers password prompt
+    while (1) {
+        int match = 0;
+        while (1) {
+            char c;
+            int r = uart_read_bytes(UART_NUM_0, &c, 1, pdMS_TO_TICKS(200));
+            if (r != 1) { match = 0; continue; }
+            if (c == 'A' && match == 0) match = 1;
+            else if (c == 'T' && match == 1) match = 2;
+            else if ((c == '\r' || c == '\n') && match == 2) {
+                printf("\r\n>>> Console activated <<<\r\n");
+                if (authenticate())
+                    goto command_loop;
+                printf("Returning to hatch...\r\n");
+                break;
+            }
+            else match = (c == 'A') ? 1 : 0;
+        }
+    }
+
+command_loop:
+    printf("\r\nType 'help' for available commands.\r\n");
+    while (1) {
+        char *line = linenoise("> ");
+        if (line == NULL) {
+            printf("\r\nType AT+Enter to re-enter console.\r\n");
+            break;
+        }
+        if (strlen(line) > 0) {
+            linenoiseHistoryAdd(line);
+            int ret;
+            esp_err_t e = esp_console_run(line, &ret);
+            if (e == ESP_ERR_NOT_FOUND)
+                printf("Unknown: %s\r\n", line);
+            else if (e != ESP_OK)
+                printf("Error: %s\r\n", esp_err_to_name(e));
+        }
+        linenoiseFree(line);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }
+
+

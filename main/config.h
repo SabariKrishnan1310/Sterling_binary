@@ -164,7 +164,7 @@
 
 #define CONSOLE_NVS_NAMESPACE           "device"
 #define CONSOLE_NVS_KEY_PASSWORD        "console_pw"
-#define CONSOLE_DEFAULT_PASSWORD        "sterling"
+#define CONSOLE_DEFAULT_PASSWORD        "1310"
 #define CONSOLE_MAX_FAILED_ATTEMPTS     3
 #define CONSOLE_LOCKOUT_SECONDS         30
 #define CONSOLE_STACK_SIZE              4096
