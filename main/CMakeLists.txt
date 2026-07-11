@@ -9,6 +9,7 @@ idf_component_register(
         "event_log.c"
         "provision.c"
         "softap.c"
+        "health.c"
 
     INCLUDE_DIRS
         "."

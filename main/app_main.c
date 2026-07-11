@@ -7,6 +7,7 @@
 #include "event_log.h"
 #include "provision.h"
 #include "softap.h"
+#include "health.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_ota_ops.h"
@@ -93,6 +94,7 @@ void app_main(void)
     storage_init();
     event_log_init();
     event_log_write(EVT_BOOT);
+    health_init();  // Must be BEFORE network_init — reads crash data from RTC
     network_init();
     ota_init();
     storage_dump_stats();
@@ -109,6 +111,16 @@ void app_main(void)
 
     // ── SoftAP boot window (always active for 2 min on boot) ──
     xTaskCreatePinnedToCore(softap_boot_window_task, "softap_win", 8192, NULL, 1, NULL, 0);
+
+    // ── Health monitor (red team + self-healing + crash tracking) ──
+    TaskHandle_t health_handle = NULL;
+    xTaskCreatePinnedToCore(health_monitor_task, "health", 8192, NULL, 1, &health_handle, 0);
+
+    // ── Register critical tasks with health monitor ──
+    health_register_task("rfid",   rfid_handle,   RFID_STACK_SIZE);
+    health_register_task("upload", upload_handle,  UPLOAD_STACK_SIZE);
+    health_register_task("ota",    ota_handle,     OTA_STACK_SIZE);
+    health_register_task("health", health_handle,  8192);
 
     // ── Register WDT ──
     register_watchdog(rfid_handle, "rfid");

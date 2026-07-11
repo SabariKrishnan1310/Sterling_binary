@@ -42,6 +42,7 @@ static void config_fetch_task(void *pvParameters);
 // ============================================================
 
 EventGroupHandle_t wifi_event_group = NULL;
+static SemaphoreHandle_t s_wifi_mutex = NULL;  // Protects WiFi reconfiguration sequences
 
 static int s_retry_count = 0;
 static int s_active_profile = 0;
@@ -291,6 +292,9 @@ static bool switch_to_profile(int idx)
         return false;
     }
 
+    // Lock WiFi mutex for atomic config change
+    if (s_wifi_mutex) xSemaphoreTake(s_wifi_mutex, pdMS_TO_TICKS(5000));
+
     wifi_config_t wifi_config = { 0 };
     strncpy((char *)wifi_config.sta.ssid, profiles[idx].ssid,
             sizeof(wifi_config.sta.ssid) - 1);
@@ -304,6 +308,10 @@ static bool switch_to_profile(int idx)
 
     esp_wifi_disconnect();
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+
+    // Release WiFi mutex
+    if (s_wifi_mutex) xSemaphoreGive(s_wifi_mutex);
+
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "set_config failed for profile %d: %s",
                  idx, esp_err_to_name(err));
@@ -533,6 +541,12 @@ static void apply_wifi_radio_settings(void)
 
 esp_err_t network_init(void)
 {
+    s_wifi_mutex = xSemaphoreCreateMutex();
+    if (!s_wifi_mutex) {
+        ESP_LOGE(TAG, "Failed to create WiFi mutex");
+        return ESP_FAIL;
+    }
+
     wifi_event_group = xEventGroupCreate();
     if (!wifi_event_group) {
         ESP_LOGE(TAG, "Failed to create event group");
@@ -582,6 +596,9 @@ esp_err_t network_start_wifi(void)
     }
 
     s_active_profile = 0;
+
+    // Lock WiFi mutex for atomic start sequence
+    if (s_wifi_mutex) xSemaphoreTake(s_wifi_mutex, pdMS_TO_TICKS(5000));
 
     // Start WiFi FIRST so we can scan
     esp_wifi_stop();
@@ -679,6 +696,9 @@ esp_err_t network_start_wifi(void)
 
     ESP_LOGI(TAG, "Connecting to profile %d: SSID=%s",
              s_active_profile, profiles[s_active_profile].ssid);
+
+    // Release WiFi mutex — connection happens via event handler
+    if (s_wifi_mutex) xSemaphoreGive(s_wifi_mutex);
     return ESP_OK;
 }
 
@@ -771,6 +791,11 @@ bool network_is_softap_active(void)
 void network_set_softap_active(bool active)
 {
     s_softap_active = active;
+}
+
+SemaphoreHandle_t network_get_wifi_mutex(void)
+{
+    return s_wifi_mutex;
 }
 
 // ============================================================

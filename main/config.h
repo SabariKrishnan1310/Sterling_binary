@@ -6,7 +6,7 @@
 // patient reconnection, SoftAP emergency command center
 // ======================================================
 
-#define FW_VERSION                     "1.0.9"
+#define FW_VERSION                     "1.1.0"
 
 // ======================================================
 // RFID PINS

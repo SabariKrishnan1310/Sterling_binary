@@ -4,6 +4,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 
 #define WIFI_CONNECTED_BIT      BIT0
 #define WIFI_DISCONNECTED_BIT   BIT1
@@ -23,3 +24,6 @@ int network_get_profile_count(void);
 esp_err_t network_get_profile_ssid(int idx, char *buf, size_t len);
 bool network_is_softap_active(void);
 void network_set_softap_active(bool active);
+
+// WiFi mutex — lock before any esp_wifi_* sequence that must be atomic
+SemaphoreHandle_t network_get_wifi_mutex(void);

@@ -569,6 +569,10 @@ static esp_err_t handle_wifi_connect(httpd_req_t *req)
 
     debug_printf("Step 3: Connecting...\n");
 
+    // Lock WiFi mutex: atomic reconfiguration sequence
+    SemaphoreHandle_t wifi_mutex = network_get_wifi_mutex();
+    if (wifi_mutex) xSemaphoreTake(wifi_mutex, pdMS_TO_TICKS(5000));
+
     wifi_config_t wifi_config = { 0 };
     strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
     strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
@@ -594,6 +598,9 @@ static esp_err_t handle_wifi_connect(httpd_req_t *req)
     }
 
     debug_printf("Connecting... waiting up to 15s for IP...\n");
+
+    // Release WiFi mutex — connection happens asynchronously via events
+    if (wifi_mutex) xSemaphoreGive(wifi_mutex);
 
     // Wait up to 15s for connection
     for (int i = 0; i < 15; i++) {

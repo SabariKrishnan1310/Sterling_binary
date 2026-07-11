@@ -1,6 +1,8 @@
 #include "event_log.h"
 #include "config.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -8,6 +10,7 @@
 #include <sys/stat.h>
 
 static const char *TAG = "event_log";
+static SemaphoreHandle_t s_log_mutex = NULL;
 
 #define EVENT_LOG_MAGIC     0x45564C47
 #define EVENT_RECORD_SIZE   (sizeof(uint64_t) + sizeof(uint8_t))
@@ -40,6 +43,12 @@ static const char *event_names[] = {
 
 esp_err_t event_log_init(void)
 {
+    s_log_mutex = xSemaphoreCreateMutex();
+    if (!s_log_mutex) {
+        ESP_LOGE(TAG, "Failed to create event log mutex");
+        return ESP_FAIL;
+    }
+
     log_fp = fopen(EVENT_LOG_PATH, "r+b");
     if (!log_fp) {
         log_fp = fopen(EVENT_LOG_PATH, "w+b");
@@ -69,7 +78,13 @@ esp_err_t event_log_init(void)
 
 esp_err_t event_log_write(event_log_type_t event)
 {
-    if (!log_fp) return ESP_FAIL;
+    if (!log_fp || !s_log_mutex) return ESP_FAIL;
+
+    // Mutex protects concurrent writes from RFID, WiFi, OTA, upload tasks
+    if (xSemaphoreTake(s_log_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Event log mutex timeout, dropping event %d", event);
+        return ESP_ERR_TIMEOUT;
+    }
 
     event_record_t rec;
     struct timeval tv;
@@ -93,6 +108,7 @@ esp_err_t event_log_write(event_log_type_t event)
     fwrite(&header, sizeof(header), 1, log_fp);
     fflush(log_fp);
 
+    xSemaphoreGive(s_log_mutex);
     return ESP_OK;
 }
 

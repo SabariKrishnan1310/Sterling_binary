@@ -4,6 +4,8 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_littlefs.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -11,6 +13,7 @@
 #include <sys/stat.h>
 
 static const char *TAG = "storage";
+static SemaphoreHandle_t s_storage_mutex = NULL;
 
 #define NVS_NAMESPACE       "storage_ns"
 #define NVS_KEY_CURSOR      "upload_csr"
@@ -70,6 +73,12 @@ static void update_pending_count(void)
 
 esp_err_t storage_init(void)
 {
+    s_storage_mutex = xSemaphoreCreateMutex();
+    if (!s_storage_mutex) {
+        ESP_LOGE(TAG, "Failed to create storage mutex");
+        return ESP_FAIL;
+    }
+
     esp_vfs_littlefs_conf_t conf = {
         .base_path = "/littlefs",
         .partition_label = "littlefs",
@@ -143,9 +152,15 @@ esp_err_t storage_init(void)
 
 esp_err_t storage_append_tap(const char *uid, uint32_t *out_seq)
 {
-    if (!taps_fp) {
-        ESP_LOGE(TAG, "[DBG] append: file not open");
+    if (!taps_fp || !s_storage_mutex) {
+        ESP_LOGE(TAG, "[DBG] append: file not open or mutex missing");
         return ESP_FAIL;
+    }
+
+    // Mutex: rfid_task and upload_task share the file handle
+    if (xSemaphoreTake(s_storage_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Storage mutex timeout on append");
+        return ESP_ERR_TIMEOUT;
     }
 
     ESP_LOGI(TAG, "[DBG] append: uid=%s next_seq=%lu", uid, (unsigned long)next_seq);
@@ -195,6 +210,7 @@ esp_err_t storage_append_tap(const char *uid, uint32_t *out_seq)
     size_t written = fwrite(&rec, sizeof(rec), 1, taps_fp);
     if (written != 1) {
         ESP_LOGE(TAG, "Failed to append tap record");
+        xSemaphoreGive(s_storage_mutex);
         return ESP_FAIL;
     }
 
@@ -208,6 +224,7 @@ esp_err_t storage_append_tap(const char *uid, uint32_t *out_seq)
 
     ESP_LOGI(TAG, "[DBG] append: OK seq=%lu total=%lu pending=%lu",
              (unsigned long)rec.seq, (unsigned long)total_count, (unsigned long)pending_count);
+    xSemaphoreGive(s_storage_mutex);
     return ESP_OK;
 }
 
@@ -229,17 +246,25 @@ esp_err_t storage_get_next_pending(tap_record_t *record)
 
 esp_err_t storage_read_at(uint32_t seq, tap_record_t *record)
 {
-    if (!taps_fp || !record) return ESP_FAIL;
+    if (!taps_fp || !record || !s_storage_mutex) return ESP_FAIL;
     if (seq >= next_seq) return ESP_FAIL;
+
+    // Mutex: rfid_task and upload_task share the file handle
+    if (xSemaphoreTake(s_storage_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Storage mutex timeout on read");
+        return ESP_ERR_TIMEOUT;
+    }
 
     long pos = (long)seq * (long)sizeof(tap_record_t);
     fseek(taps_fp, pos, SEEK_SET);
 
+    esp_err_t err = ESP_OK;
     if (fread(record, sizeof(tap_record_t), 1, taps_fp) != 1) {
-        return ESP_FAIL;
+        err = ESP_FAIL;
     }
 
-    return ESP_OK;
+    xSemaphoreGive(s_storage_mutex);
+    return err;
 }
 
 uint32_t storage_first_pending_seq(void)
