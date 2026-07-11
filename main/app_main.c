@@ -38,31 +38,42 @@ static void register_watchdog(TaskHandle_t task, const char *name)
 
 // SoftAP boot window: always active for first 2 minutes
 // then stops if WiFi is connected
+// EMERGENCY HATCH: Always attempts SoftAP, logs failure but doesn't crash
 static void softap_boot_window_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "SoftAP boot window: %ds (SSID: %s)",
              SOFTAP_BOOT_WINDOW_MS / 1000, SOFTAP_SSID);
 
-    // Always start SoftAP on boot
+    // Always attempt SoftAP — this is the emergency hatch
     softap_init();
-    softap_start();
+    esp_err_t err = softap_start();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SoftAP start failed (%s) — emergency hatch unavailable",
+                 esp_err_to_name(err));
+        ESP_LOGW(TAG, "Device will continue without SoftAP dashboard");
+    }
 
     // Wait for boot window to expire
     vTaskDelay(pdMS_TO_TICKS(SOFTAP_BOOT_WINDOW_MS));
 
     // If WiFi is connected, we can stop SoftAP
-    EventBits_t bits = xEventGroupGetBits(wifi_event_group);
-    if ((bits & WIFI_CONNECTED_BIT) && softap_is_active()) {
-        ESP_LOGI(TAG, "WiFi connected, stopping SoftAP");
-        softap_stop();
+    if (softap_is_active()) {
+        EventBits_t bits = xEventGroupGetBits(wifi_event_group);
+        if (bits & WIFI_CONNECTED_BIT) {
+            ESP_LOGI(TAG, "WiFi connected, stopping SoftAP");
+            softap_stop();
+        }
     }
     vTaskDelete(NULL);
 }
 
 void app_main(void)
 {
-    // ═══ CRITICAL: LINE 1 — rollback confirm BEFORE anything ═══
-    esp_ota_mark_app_valid_cancel_rollback();
+    // ═══ CRITICAL: Do NOT confirm OTA here ═══
+    // The health monitor's self-test will confirm after verifying
+    // flash, heap, and partition are healthy. If self-test fails,
+    // the bootloader rolls back to the previous firmware.
+    // This is the emergency hatch — never weld it shut early.
     
     // ── WDT init ──
     esp_task_wdt_config_t wdt_config = {

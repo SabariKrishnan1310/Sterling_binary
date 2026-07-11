@@ -951,8 +951,17 @@ esp_err_t softap_start(void)
     // Create AP netif ONLY — STA netif already exists from network_init()
     esp_netif_create_default_wifi_ap();
 
-    // Switch to APSTA mode — WiFi stays running, no stop/start needed
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    // Try APSTA first (keeps STA alive for WiFi connection)
+    esp_err_t err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (err != ESP_OK) {
+        // APSTA failed — WiFi may not be initialized. Try AP-only as fallback.
+        ESP_LOGW(TAG, "APSTA failed (%s), trying AP-only mode", esp_err_to_name(err));
+        err = esp_wifi_set_mode(WIFI_MODE_AP);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Cannot set WiFi mode: %s — SoftAP FAILED", esp_err_to_name(err));
+            return err;
+        }
+    }
 
     wifi_config_t ap_config = { 0 };
     strncpy((char *)ap_config.ap.ssid, SOFTAP_SSID, 32);

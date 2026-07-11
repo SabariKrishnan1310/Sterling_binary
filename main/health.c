@@ -26,8 +26,10 @@ static const char *TAG = "health";
 // RTC RETAINED DATA
 // ============================================================
 // RTC_DATA_ATTR survives soft reboot but NOT power cycle.
+// This is the EMERGENCY HATCH — works even if NVS is corrupted.
 
 #define RTC_HEALTH_MAGIC 0x5354524C  // "STRL"
+#define RTC_BOOT_LOOP_THRESHOLD 5    // Rollback after 5 consecutive crashes
 
 RTC_DATA_ATTR static rtc_health_t s_rtc = { 0 };
 
@@ -46,14 +48,56 @@ void health_init(void)
         ESP_LOGW(TAG, "  Crash PC: 0x%08lx", (unsigned long)s_rtc.last_crash_pc);
         ESP_LOGW(TAG, "  Min heap: %lu bytes", (unsigned long)s_rtc.min_heap_seen);
 
-        // If crash count is getting high, log the event
-        if (s_rtc.crash_count >= 3) {
-            ESP_LOGE(TAG, "WARNING: %lu consecutive crashes! Investigate.",
+        // ═══ BOOT LOOP DETECTION — THE EMERGENCY HATCH ═══
+        // If device has crashed RTC_BOOT_LOOP_THRESHOLD times in a row
+        // (soft reboots only — RTC survives those), rollback immediately.
+        // This works even if NVS is completely corrupted.
+        if (s_rtc.crash_count >= RTC_BOOT_LOOP_THRESHOLD) {
+            ESP_LOGE(TAG, "╔══════════════════════════════════════════╗");
+            ESP_LOGE(TAG, "║  BOOT LOOP DETECTED (%lu crashes!)     ║", 
                      (unsigned long)s_rtc.crash_count);
+            ESP_LOGE(TAG, "║  Rolling back to previous firmware...  ║");
+            ESP_LOGE(TAG, "╚══════════════════════════════════════════╝");
+            
+            // Clear crash count so we don't loop forever
+            s_rtc.crash_count = 0;
+            
+            // Find the other OTA partition and boot from it
+            const esp_partition_t *running = esp_ota_get_running_partition();
+            if (running) {
+                esp_ota_img_states_t state;
+                if (esp_ota_get_state_partition(running, &state) == ESP_OK) {
+                    if (state == ESP_OTA_IMG_PENDING_VERIFY) {
+                        // We're in pending verify — just don't confirm, bootloader rolls back
+                        ESP_LOGE(TAG, "NOT confirming OTA — bootloader will rollback");
+                        // Do NOT call esp_ota_mark_app_valid_cancel_rollback()
+                        // The bootloader's timeout will handle rollback
+                    } else {
+                        // Already confirmed — need to manually switch
+                        esp_partition_type_t other_type = 
+                            (running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0) ?
+                            ESP_PARTITION_SUBTYPE_APP_OTA_1 :
+                            ESP_PARTITION_SUBTYPE_APP_OTA_0;
+                        const esp_partition_t *other = esp_partition_find_first(
+                            ESP_PARTITION_TYPE_APP, other_type, NULL);
+                        if (other) {
+                            ESP_LOGE(TAG, "Switching to partition: %s", other->label);
+                            esp_ota_set_boot_partition(other);
+                        }
+                    }
+                }
+            }
+            
+            ESP_LOGE(TAG, "Rebooting in 2 seconds...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_restart();
+            return;  // Never reaches here
         }
 
-        // Clear crash count on successful boot (we got past init)
-        // Will be cleared for real after self-test passes
+        if (s_rtc.crash_count >= 2) {
+            ESP_LOGW(TAG, "WARNING: %lu consecutive crashes. Monitor closely.",
+                     (unsigned long)s_rtc.crash_count);
+        }
     }
 
     // Initialize RTC health data for this boot
