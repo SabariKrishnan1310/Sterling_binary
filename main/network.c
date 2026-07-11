@@ -559,8 +559,8 @@ esp_err_t network_init(void)
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
 
-    // Max TX power + no power save = maximum range
-    apply_wifi_radio_settings();
+    // NOTE: TX power and power save are applied in network_start_wifi()
+    // after esp_wifi_start(), since those APIs require running WiFi.
 
     load_wifi_profiles();
     if (profile_count == 0) {
@@ -583,25 +583,18 @@ esp_err_t network_start_wifi(void)
 
     s_active_profile = 0;
 
-    // Scan before connecting to first profile
-    scan_result_t scan = scan_for_ssid(profiles[0].ssid);
-    if (!scan.found) {
-        ESP_LOGW(TAG, "Profile 0 SSID '%s' not visible, trying full scan",
-                 profiles[0].ssid);
-        int best = full_scan_recovery();
-        if (best >= 0) {
-            s_active_profile = best;
-        } else {
-            ESP_LOGW(TAG, "No matching AP found, will retry on next poll");
-        }
-    }
-
-    ESP_LOGI(TAG, "Connecting to profile %d: SSID=%s",
-             s_active_profile, profiles[s_active_profile].ssid);
-
+    // Start WiFi FIRST so we can scan
     esp_wifi_stop();
     vTaskDelay(pdMS_TO_TICKS(100));
-    esp_wifi_set_mode(WIFI_MODE_STA);
+
+    // Use APSTA if SoftAP is active, otherwise pure STA
+    if (network_is_softap_active()) {
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+        ESP_LOGI(TAG, "WiFi mode: APSTA (SoftAP active)");
+    } else {
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        ESP_LOGI(TAG, "WiFi mode: STA");
+    }
 
     wifi_config_t wifi_config = { 0 };
     strncpy((char *)wifi_config.sta.ssid, profiles[s_active_profile].ssid,
@@ -610,10 +603,10 @@ esp_err_t network_start_wifi(void)
             sizeof(wifi_config.sta.password) - 1);
     wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;  // accept any auth mode
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
     wifi_config.sta.failure_retry_cnt = 3;
 
-    // Reapply max TX power after stop/start
+    // Apply max TX power BEFORE esp_wifi_start
     apply_wifi_radio_settings();
 
     esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
@@ -628,7 +621,64 @@ esp_err_t network_start_wifi(void)
         return err;
     }
 
+    // If SoftAP is active, reconfigure AP interface (esp_wifi_stop killed it)
+    if (network_is_softap_active()) {
+        wifi_config_t ap_cfg = { 0 };
+        strncpy((char *)ap_cfg.ap.ssid, SOFTAP_SSID, 32);
+        strncpy((char *)ap_cfg.ap.password, SOFTAP_PASSWORD, 64);
+        ap_cfg.ap.ssid_len = strlen(SOFTAP_SSID);
+        ap_cfg.ap.channel = SOFTAP_CHANNEL;
+        ap_cfg.ap.max_connection = SOFTAP_MAX_CONN;
+        ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
+        esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+
+        // Restore static IP for AP
+        esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+        if (ap_netif) {
+            esp_netif_dhcps_stop(ap_netif);
+            esp_netif_ip_info_t ip_info = {
+                .ip.addr = ipaddr_addr(SOFTAP_IP_ADDR),
+                .gw.addr = ipaddr_addr(SOFTAP_IP_GW),
+                .netmask.addr = ipaddr_addr(SOFTAP_IP_NETMASK),
+            };
+            esp_netif_set_ip_info(ap_netif, &ip_info);
+            esp_netif_dhcps_start(ap_netif);
+        }
+        ESP_LOGI(TAG, "AP interface reconfigured (SoftAP active)");
+    }
+
     ESP_LOGI(TAG, "WiFi started OK");
+
+    // NOW scan — WiFi is running
+    scan_result_t scan = scan_for_ssid(profiles[0].ssid);
+    if (!scan.found) {
+        ESP_LOGW(TAG, "Profile 0 SSID '%s' not visible, trying full scan",
+                 profiles[0].ssid);
+        int best = full_scan_recovery();
+        if (best >= 0) {
+            // Switch to best found profile
+            esp_wifi_stop();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            s_active_profile = best;
+            memset(&wifi_config, 0, sizeof(wifi_config));
+            strncpy((char *)wifi_config.sta.ssid, profiles[best].ssid,
+                    sizeof(wifi_config.sta.ssid) - 1);
+            strncpy((char *)wifi_config.sta.password, profiles[best].password,
+                    sizeof(wifi_config.sta.password) - 1);
+            wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+            wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+            wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+            wifi_config.sta.failure_retry_cnt = 3;
+            apply_wifi_radio_settings();
+            esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+            esp_wifi_start();
+        } else {
+            ESP_LOGW(TAG, "No matching AP found, will retry on next poll");
+        }
+    }
+
+    ESP_LOGI(TAG, "Connecting to profile %d: SSID=%s",
+             s_active_profile, profiles[s_active_profile].ssid);
     return ESP_OK;
 }
 

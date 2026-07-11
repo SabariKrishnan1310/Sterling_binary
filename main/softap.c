@@ -19,6 +19,7 @@
 #include "provision.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
+#include "esp_netif.h"
 #include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_ota_ops.h"
@@ -926,18 +927,11 @@ static esp_err_t start_server(void)
 
 esp_err_t softap_init(void)
 {
-    ESP_LOGI(TAG, "Initializing SoftAP...");
-
-    esp_netif_init();
-    esp_event_loop_create_default();
-    esp_netif_create_default_wifi_sta();
-    esp_netif_create_default_wifi_ap();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    esp_wifi_set_ps(WIFI_PS_NONE);
-
+    ESP_LOGI(TAG, "Initializing SoftAP (HTTP handlers only)...");
+    // NOTE: WiFi stack, netif, and event loop are owned by network_init().
+    // We do NOT touch them here — softap_start() switches mode to APSTA
+    // and creates only the AP netif when needed.
+    s_softap_active = false;
     return ESP_OK;
 }
 
@@ -947,11 +941,11 @@ esp_err_t softap_start(void)
 
     ESP_LOGI(TAG, "Starting SoftAP: SSID=%s", SOFTAP_SSID);
 
-    esp_wifi_stop();
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // Create AP netif ONLY — STA netif already exists from network_init()
+    esp_netif_create_default_wifi_ap();
 
+    // Switch to APSTA mode — WiFi stays running, no stop/start needed
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
     wifi_config_t ap_config = { 0 };
     strncpy((char *)ap_config.ap.ssid, SOFTAP_SSID, 32);
@@ -975,35 +969,10 @@ esp_err_t softap_start(void)
         esp_netif_dhcps_start(ap_netif);
     }
 
-    // Also load existing STA config from NVS if available
-    wifi_config_t sta_config = { 0 };
-    nvs_handle_t nvs;
-    if (nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
-        uint8_t count = 0;
-        nvs_get_u8(nvs, "count", &count);
-        if (count > 0) {
-            char ssid[64] = {0};
-            char pwd[64] = {0};
-            size_t len = sizeof(ssid);
-            if (nvs_get_str(nvs, "ssid_0", ssid, &len) == ESP_OK) {
-                len = sizeof(pwd);
-                nvs_get_str(nvs, "pwd_0", pwd, &len);
-                strncpy((char *)sta_config.sta.ssid, ssid, sizeof(sta_config.sta.ssid) - 1);
-                sta_config.sta.ssid[sizeof(sta_config.sta.ssid) - 1] = '\0';
-                strncpy((char *)sta_config.sta.password, pwd, sizeof(sta_config.sta.password) - 1);
-                sta_config.sta.password[sizeof(sta_config.sta.password) - 1] = '\0';
-                ESP_LOGI(TAG, "STA pre-configured with: %s", ssid);
-            }
-        }
-        nvs_close(nvs);
-    }
-    sta_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    sta_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-    sta_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
-
-    ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "WiFi started: SSID=%s", SOFTAP_SSID);
+    // NOTE: STA config and WiFi start are owned by the network module.
+    // We don't touch STA config or call esp_wifi_start() here —
+    // WiFi is already running in STA mode. The APSTA mode switch
+    // above adds the AP interface alongside the existing STA.
 
     esp_err_t http_err = start_server();
     if (http_err != ESP_OK) return http_err;
@@ -1021,15 +990,27 @@ esp_err_t softap_stop(void)
 
     ESP_LOGI(TAG, "Stopping SoftAP...");
 
+    // Stop HTTP server
     if (s_server) {
         httpd_stop(s_server);
         s_server = NULL;
     }
 
+    // Destroy the AP netif — this removes the AP interface
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap_netif) {
+        esp_netif_destroy_default_wifi(ap_netif);
+        ESP_LOGI(TAG, "AP netif destroyed");
+    }
+
+    // Switch back to STA mode — WiFi stays running, STA interface remains active
+    // The network wifi_task will handle reconnection on its next poll
+    esp_wifi_set_mode(WIFI_MODE_STA);
+
     s_softap_active = false;
     network_set_softap_active(false);
 
-    ESP_LOGI(TAG, "SoftAP stopped");
+    ESP_LOGI(TAG, "SoftAP stopped, back to STA mode");
     return ESP_OK;
 }
 
