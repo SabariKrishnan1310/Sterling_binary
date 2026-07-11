@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
@@ -15,3 +16,10 @@ esp_err_t network_start_wifi(void);
 esp_err_t network_send_tap_single(const char *uid);
 void upload_task(void *pvParameters);
 void network_wifi_task(void *pvParameters);
+
+// SoftAP helpers
+int network_get_rssi(void);
+int network_get_profile_count(void);
+esp_err_t network_get_profile_ssid(int idx, char *buf, size_t len);
+bool network_is_softap_active(void);
+void network_set_softap_active(bool active);

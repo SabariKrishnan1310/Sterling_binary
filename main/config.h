@@ -1,10 +1,12 @@
 #pragma once
 
 // ======================================================
-// STERLING PROD
+// STERLING PROD — v1.0.9
+// Max TX power, scan-before-connect, round-robin profiles,
+// patient reconnection, SoftAP emergency command center
 // ======================================================
 
-#define FW_VERSION                     "1.0.8"
+#define FW_VERSION                     "1.0.9"
 
 // ======================================================
 // RFID PINS
@@ -26,10 +28,7 @@
 // DEVICE
 // ======================================================
 
-// Override MAC-based device_id with fixed name (comment out to auto-generate)
 #define DEVICE_ID                      "Sterling-Main-Demo"
-
-// Fallback name if MAC generation fails (used when DEVICE_ID not defined)
 #define DEVICE_PREFIX                  "GATE"
 
 // ======================================================
@@ -43,7 +42,7 @@
 "8_5IOTuP5zqcl1E8KDdJL2Fv0n5JXuwjdXPOoSoohEYvrM7wAPs9_ij3GiHYJNpzBQe7Sjkoxr_iRbPhwx22iw"
 
 // ======================================================
-// OTA
+// OTA — PULLS FROM GITHUB
 // ======================================================
 
 #define OTA_VERSION_URL \
@@ -55,7 +54,6 @@
 #define OTA_FALLBACK_URL \
 ""
 
-// OTA check every 60 seconds
 #define OTA_CHECK_INTERVAL_MS          60000
 
 // ======================================================
@@ -63,15 +61,46 @@
 // ======================================================
 
 #define WIFI_CONNECT_TIMEOUT_MS        15000
+#define HTTP_TIMEOUT_MS                120000   // 2 min for OTA downloads
 
-#define HTTP_TIMEOUT_MS                8000
+// ======================================================
+// WiFi TX POWER — PCB TRACE ANTENNA MAX (19.5 dBm)
+// ESP32 WROOM-32: 78 * 0.25 dBm = 19.5 dBm
+// Explicit set prevents IDF defaults (~17 dBm)
+// ======================================================
+
+#define WIFI_TX_POWER_MAX              78
+
+// ======================================================
+// WiFi RECONNECTION — PATIENT + ROUND-ROBIN
+// ======================================================
+#define WIFI_MAX_RETRY_BEFORE_ROTATE   3       // retries per profile before rotate
+#define WIFI_BACKOFF_BASE_MS           2000    // 2s initial backoff
+#define WIFI_BACKOFF_MAX_MS            120000  // 2 min max backoff
+#define WIFI_RECONNECT_POLL_MS         5000    // 5s poll when disconnected
+#define WIFI_SOFTAP_TRIGGER_COUNT      20      // failures before SoftAP fallback
+#define WIFI_SCAN_TIMEOUT_MS           4000    // scan timeout per channel
+
+// ======================================================
+// SOFTAP EMERGENCY COMMAND CENTER
+// ======================================================
+
+#define SOFTAP_SSID                    "Sterling"
+#define SOFTAP_PASSWORD                "sterling123"
+#define SOFTAP_CHANNEL                 1
+#define SOFTAP_MAX_CONN                2
+#define SOFTAP_IP_ADDR                "192.168.4.1"
+#define SOFTAP_IP_GW                  "192.168.4.1"
+#define SOFTAP_IP_NETMASK             "255.255.255.0"
+#define SOFTAP_BOOT_WINDOW_MS          120000  // 2 min provisioning window on boot
+#define SOFTAP_HTTP_PORT               80
+#define SOFTAP_MAX_POST_SIZE           512
 
 // ======================================================
 // STORAGE
 // ======================================================
 
 #define STORAGE_FILE_PATH              "/littlefs/taps.bin"
-
 #define STORAGE_MAX_RECORDS            250000
 
 // ======================================================
@@ -92,21 +121,11 @@
 // WIFI PROFILES
 // ======================================================
 
-// WiFi API provisioning (replaces NTP as primary time source)
 #define WIFI_API_URL                "http://api.sabarikrishnan.me/api/v1/wifi"
-
-// Unlimited WiFi profiles (was 5)
 #define WIFI_MAX_PROFILES           250
-
-// OTA check every 60 seconds
-#define OTA_CHECK_INTERVAL_MS       60000
-
-// WiFi NVS namespace and reconnect delay
 #define WIFI_NVS_NAMESPACE             "wifi_profiles"
 #define WIFI_RECONNECT_DELAY_MS        5000
-
-// Factory reset — boot partition index for factory
-#define FACTORY_PARTITION_INDEX     0  // factory is always slot 0 in ESP-IDF
+#define FACTORY_PARTITION_INDEX     0
 
 // ======================================================
 // UPLOAD
@@ -121,7 +140,6 @@
 // ======================================================
 
 #define TAP_QUEUE_LENGTH               64
-
 #define LED_QUEUE_LENGTH               16
 
 // ======================================================
@@ -136,11 +154,8 @@
 
 #define LED_BOOT_ON_MS                 200
 #define LED_BOOT_OFF_MS                100
-
 #define LED_SUCCESS_MS                 300
-
 #define LED_FAIL_ON_MS                 100
 #define LED_FAIL_OFF_MS                100
-
 #define LED_OFFLINE_PULSE_MS           50
 #define LED_OFFLINE_PERIOD_MS          2000

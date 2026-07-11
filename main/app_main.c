@@ -6,6 +6,7 @@
 #include "led.h"
 #include "event_log.h"
 #include "provision.h"
+#include "softap.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_ota_ops.h"
@@ -34,6 +35,29 @@ static void register_watchdog(TaskHandle_t task, const char *name)
     }
 }
 
+// SoftAP boot window: always active for first 2 minutes
+// then stops if WiFi is connected
+static void softap_boot_window_task(void *pvParameters)
+{
+    ESP_LOGI(TAG, "SoftAP boot window: %ds (SSID: %s)",
+             SOFTAP_BOOT_WINDOW_MS / 1000, SOFTAP_SSID);
+
+    // Always start SoftAP on boot
+    softap_init();
+    softap_start();
+
+    // Wait for boot window to expire
+    vTaskDelay(pdMS_TO_TICKS(SOFTAP_BOOT_WINDOW_MS));
+
+    // If WiFi is connected, we can stop SoftAP
+    EventBits_t bits = xEventGroupGetBits(wifi_event_group);
+    if ((bits & WIFI_CONNECTED_BIT) && softap_is_active()) {
+        ESP_LOGI(TAG, "WiFi connected, stopping SoftAP");
+        softap_stop();
+    }
+    vTaskDelete(NULL);
+}
+
 void app_main(void)
 {
     // ═══ CRITICAL: LINE 1 — rollback confirm BEFORE anything ═══
@@ -45,18 +69,27 @@ void app_main(void)
         .idle_core_mask = (1 << 0) | (1 << 1),
         .trigger_panic = true,
     };
-    // TWDT may already be initialized by IDF startup — ignore error
     esp_task_wdt_init(&wdt_config);
 
-    ESP_LOGI(TAG, "Sterling v%s — WiFi API Provisioning + Factory Recovery", FW_VERSION);
+    ESP_LOGI(TAG, "Sterling v%s — Max TX Power + Scan + Round-Robin + SoftAP", FW_VERSION);
     
     // ── Task handles ──
     TaskHandle_t rfid_handle = NULL;
     TaskHandle_t upload_handle = NULL;
     TaskHandle_t ota_handle = NULL;
 
+    // ── Init NVS with corruption recovery ──
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS corrupted (0x%x), erasing + reinit", nvs_err);
+        nvs_flash_erase();
+        nvs_err = nvs_flash_init();
+    }
+    if (nvs_err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS init FAILED: %s", esp_err_to_name(nvs_err));
+    }
+
     // ── Init all subsystems ──
-    nvs_flash_init();
     storage_init();
     event_log_init();
     event_log_write(EVT_BOOT);
@@ -71,13 +104,18 @@ void app_main(void)
     xTaskCreatePinnedToCore(upload_task,"upload_task", UPLOAD_STACK_SIZE, NULL, 1, &upload_handle,0);
     xTaskCreatePinnedToCore(ota_task,   "ota_task",   OTA_STACK_SIZE,  NULL, 1, &ota_handle,   0);
     
-    // ── NEW: factory trigger monitor ──
+    // ── Factory trigger monitor ──
     xTaskCreatePinnedToCore(factory_trigger_monitor_task, "factory_mon", 4096, NULL, 1, NULL, 0);
+
+    // ── SoftAP boot window (always active for 2 min on boot) ──
+    xTaskCreatePinnedToCore(softap_boot_window_task, "softap_win", 8192, NULL, 1, NULL, 0);
 
     // ── Register WDT ──
     register_watchdog(rfid_handle, "rfid");
     register_watchdog(upload_handle, "upload");
     register_watchdog(ota_handle, "ota");
+
+    ESP_LOGI(TAG, "All tasks started. SoftAP SSID: %s", SOFTAP_SSID);
 
     vTaskDelete(NULL);
 }

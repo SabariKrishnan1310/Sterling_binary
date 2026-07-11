@@ -85,7 +85,15 @@ esp_err_t wifi_fetch_global_config(void)
         return ESP_FAIL;
     }
 
-    // Extract and set IST time (PRIMARY time source, replaces NTP)
+    // Validate required fields
+    cJSON *success = cJSON_GetObjectItemCaseSensitive(json, "success");
+    if (cJSON_IsFalse(success)) {
+        ESP_LOGE(TAG, "API returned success=false");
+        cJSON_Delete(json);
+        return ESP_FAIL;
+    }
+
+    // Extract and set IST time from epoch timestamp
     cJSON *ts_item = cJSON_GetObjectItemCaseSensitive(json, "timestamp");
     if (cJSON_IsNumber(ts_item)) {
         time_t server_ts = (time_t)ts_item->valuedouble;
@@ -95,47 +103,65 @@ esp_err_t wifi_fetch_global_config(void)
         tzset();
         ESP_LOGI(TAG, "Time synced from API: %lld", (long long)server_ts);
     } else {
-        ESP_LOGW(TAG, "No timestamp in API response");
+        ESP_LOGW(TAG, "No timestamp in API response, time not synced");
     }
 
-    // Extract WiFi networks
+    // Extract WiFi networks — parse {"success":true,"networks":[{"ssid":"...","password":"..."}],...}
     cJSON *networks = cJSON_GetObjectItemCaseSensitive(json, "networks");
-    if (cJSON_IsArray(networks)) {
-        nvs_handle_t nvs;
-        esp_err_t nvs_err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs);
-        
-        if (nvs_err == ESP_OK) {
-            nvs_erase_all(nvs);
-            
-            int count = 0;
-            cJSON *net;
-            cJSON_ArrayForEach(net, networks) {
-                if (count >= WIFI_MAX_PROFILES) break;
-                
-                cJSON *ssid = cJSON_GetObjectItemCaseSensitive(net, "ssid");
-                cJSON *pwd  = cJSON_GetObjectItemCaseSensitive(net, "password");
-                
-                if (cJSON_IsString(ssid) && cJSON_IsString(pwd)) {
-                    char key[32];
-                    snprintf(key, sizeof(key), "ssid_%d", count);
-                    nvs_set_str(nvs, key, ssid->valuestring);
-                    snprintf(key, sizeof(key), "pwd_%d", count);
-                    nvs_set_str(nvs, key, pwd->valuestring);
-                    count++;
-                }
-            }
-            
-            nvs_set_u16(nvs, "count", (uint16_t)count);
-            nvs_commit(nvs);
-            nvs_close(nvs);
-            
-            ESP_LOGI(TAG, "Stored %d WiFi profiles from API", count);
-        } else {
-            ESP_LOGE(TAG, "NVS open failed: %s", esp_err_to_name(nvs_err));
-        }
-    } else {
+    if (!cJSON_IsArray(networks)) {
         ESP_LOGW(TAG, "No networks array in API response");
+        cJSON_Delete(json);
+        return ESP_OK;  // time was still synced if available
     }
+
+    nvs_handle_t nvs;
+    esp_err_t nvs_err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (nvs_err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS open failed: %s", esp_err_to_name(nvs_err));
+        cJSON_Delete(json);
+        return ESP_FAIL;
+    }
+
+    // Erase old profiles before writing new ones
+    nvs_erase_all(nvs);
+
+    int count = 0;
+    cJSON *net;
+    cJSON_ArrayForEach(net, networks) {
+        if (count >= WIFI_MAX_PROFILES) {
+            ESP_LOGW(TAG, "Hit max profiles limit (%d), skipping rest", WIFI_MAX_PROFILES);
+            break;
+        }
+
+        cJSON *ssid = cJSON_GetObjectItemCaseSensitive(net, "ssid");
+        cJSON *pwd  = cJSON_GetObjectItemCaseSensitive(net, "password");
+
+        if (!cJSON_IsString(ssid) || !cJSON_IsString(pwd)) {
+            ESP_LOGW(TAG, "Profile %d: missing ssid or password, skipping", count);
+            continue;
+        }
+
+        // Skip empty SSIDs
+        if (strlen(ssid->valuestring) == 0) {
+            ESP_LOGW(TAG, "Profile %d: empty SSID, skipping", count);
+            continue;
+        }
+
+        char key[32];
+        snprintf(key, sizeof(key), "ssid_%d", count);
+        nvs_set_str(nvs, key, ssid->valuestring);
+        snprintf(key, sizeof(key), "pwd_%d", count);
+        nvs_set_str(nvs, key, pwd->valuestring);
+        ESP_LOGI(TAG, "Profile %d: SSID=%s", count, ssid->valuestring);
+        count++;
+    }
+
+    // u8 matches network.c's nvs_get_u8 for "count"
+    nvs_set_u8(nvs, "count", (uint8_t)count);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+
+    ESP_LOGI(TAG, "Stored %d WiFi profiles from API", count);
 
     cJSON_Delete(json);
     return ESP_OK;

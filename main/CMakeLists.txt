@@ -8,6 +8,7 @@ idf_component_register(
         "led.c"
         "event_log.c"
         "provision.c"
+        "softap.c"
 
     INCLUDE_DIRS
         "."
@@ -18,6 +19,7 @@ idf_component_register(
         esp_netif
         esp_wifi
         esp_http_client
+        esp_http_server
         esp_https_ota
         app_update
         bootloader_support
