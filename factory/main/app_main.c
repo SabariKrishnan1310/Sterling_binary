@@ -1,79 +1,65 @@
+// ==========================================================
+// STERLING BOOTSTRAP v2.0.0
+// ==========================================================
+// Minimal firmware: SoftAP + Web UI + OTA
+// Lives in factory partition. No WiFi connect, no config fetch.
+// User configures WiFi via web dashboard, then installs
+// main firmware from Sterling_Prod repo.
+// ==========================================================
+
 #include "config.h"
-#include "network.h"
+#include "softap.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "esp_event.h"
-#include "esp_netif.h"
 
-static const char *TAG = "FACTORY_APP";
+static const char *TAG = "BOOTSTRAP";
 
 void app_main(void)
 {
-    // Initialize GPIO for LED
+    // ── LED init — quick "I'm alive" blink ──
     gpio_config_t io_conf = {0};
     io_conf.pin_bit_mask = (1ULL << STATUS_LED);
     io_conf.mode = GPIO_MODE_OUTPUT;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
-    
-    // LED blink 3 times = "I'm alive"
+
     for (int i = 0; i < 3; i++) {
         gpio_set_level(STATUS_LED, 1);
-        vTaskDelay(200 / portTICK_PERIOD_MS);
+        vTaskDelay(150 / portTICK_PERIOD_MS);
         gpio_set_level(STATUS_LED, 0);
-        vTaskDelay(200 / portTICK_PERIOD_MS);
+        vTaskDelay(150 / portTICK_PERIOD_MS);
     }
-    
-    // Initialize NVS
+
+    // ── NVS init ──
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS: erasing and reinitializing");
         nvs_flash_erase();
         nvs_flash_init();
     }
-    
-    // Initialize network
-    wifi_init();
-    
-    // Wait for WiFi
-    for (int retry = 0; retry < 60; retry++) {
-        if (wifi_is_connected()) break;
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
-    
-    if (!wifi_is_connected()) {
-        // SOS forever — no WiFi
+
+    // ── Start SoftAP + HTTP server ──
+    ESP_LOGI(TAG, "Starting Sterling Bootstrap v%s", BOOTSTRAP_VERSION);
+    err = softap_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SoftAP init failed: %s — SOS blink forever", esp_err_to_name(err));
         while (1) {
-            gpio_set_level(STATUS_LED, 1); vTaskDelay(100/portTICK_PERIOD_MS);
-            gpio_set_level(STATUS_LED, 0); vTaskDelay(100/portTICK_PERIOD_MS);
-            gpio_set_level(STATUS_LED, 1); vTaskDelay(100/portTICK_PERIOD_MS);
-            gpio_set_level(STATUS_LED, 0); vTaskDelay(100/portTICK_PERIOD_MS);
-            gpio_set_level(STATUS_LED, 1); vTaskDelay(100/portTICK_PERIOD_MS);
-            gpio_set_level(STATUS_LED, 0); vTaskDelay(700/portTICK_PERIOD_MS);
+            gpio_set_level(STATUS_LED, 1); vTaskDelay(100 / portTICK_PERIOD_MS);
+            gpio_set_level(STATUS_LED, 0); vTaskDelay(100 / portTICK_PERIOD_MS);
         }
     }
-    
-    // Fetch config + time
-    wifi_fetch_config();  // sets time, stores networks
-    
-    // Force OTA — this is the WHOLE POINT of factory firmware
-    while (1) {
-        esp_err_t e = ota_force_update();
-        if (e == ESP_OK) {
-            // Reboot into ota_0
-            esp_restart();
-        }
-        // Failed — SOS blink, retry in 60s
-        for (int i = 0; i < 10; i++) {
-            gpio_set_level(STATUS_LED, 1); vTaskDelay(100/portTICK_PERIOD_MS);
-            gpio_set_level(STATUS_LED, 0); vTaskDelay(100/portTICK_PERIOD_MS);
-            gpio_set_level(STATUS_LED, 1); vTaskDelay(100/portTICK_PERIOD_MS);
-            gpio_set_level(STATUS_LED, 0); vTaskDelay(100/portTICK_PERIOD_MS);
-            gpio_set_level(STATUS_LED, 1); vTaskDelay(100/portTICK_PERIOD_MS);
-            gpio_set_level(STATUS_LED, 0); vTaskDelay(700/portTICK_PERIOD_MS);
-        }
-        vTaskDelay(60000 / portTICK_PERIOD_MS);  // wait 60s before retry
-    }
+
+    ESP_LOGI(TAG, "Bootstrap running. Connect to WiFi '%s' and open http://%s",
+             SOFTAP_SSID, SOFTAP_IP_ADDR);
+
+    // ── LED on = SoftAP ready ──
+    gpio_set_level(STATUS_LED, 1);
+
+    // Bootstrap has nothing else to do — HTTP server runs in its own task.
+    // The vTaskDelete(NULL) is technically not needed since app_main never returns,
+    // but we keep it to free the 8KB app_main stack.
+    vTaskDelete(NULL);
 }

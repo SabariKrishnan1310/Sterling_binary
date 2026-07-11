@@ -1,0 +1,54 @@
+# ═══════════════════════════════════════════════════════════
+# STERLING BOOTSTRAP v2.0.0 — sdkconfig.defaults
+# ═══════════════════════════════════════════════════════════
+# Applied on top of sdkconfig during full clean build.
+# ═══════════════════════════════════════════════════════════
+
+# ── Target ──
+CONFIG_IDF_TARGET="esp32"
+
+# ── Partition Table ──
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ── Flash Size ──
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+
+# ── HTTP Server ──
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+CONFIG_HTTPD_MAX_HDR_LEN=1024
+
+# ── WiFi ──
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+
+# ── No WDT for app_main (simple bootstrap) ──
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# ── Stack Overflow Detection (Method 2 — canary) ──
+CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY=y
+
+# ── App Task Stack Size ──
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# ── Log Level ──
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# ── HTTPS (for OTA from GitHub raw) ──
+CONFIG_ESP_TLS_USING_MBEDTLS=y
+
+# ── Brownout ──
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_3V=y
+
+# ── Compiler ──
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
