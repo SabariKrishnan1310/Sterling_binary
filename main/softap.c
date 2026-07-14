@@ -984,7 +984,17 @@ esp_err_t softap_start(void)
     ap_config.ap.channel = SOFTAP_CHANNEL;
     ap_config.ap.max_connection = SOFTAP_MAX_CONN;
     ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    // NOTE: do NOT use ESP_ERROR_CHECK here. softap_start() runs in the
+    // boot path BEFORE the safe-mode gate, so a panic would brick the
+    // device (the recovery dashboard could never come up). Handle the
+    // error gracefully like the rest of this function and let app_main
+    // log "emergency hatch unavailable" and continue.
+    esp_err_t cfg_err = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+    if (cfg_err != ESP_OK) {
+        ESP_LOGE(TAG, "Cannot set AP config: %s — SoftAP FAILED",
+                  esp_err_to_name(cfg_err));
+        return cfg_err;
+    }
 
     // Set static IP for AP
     esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
