@@ -12,6 +12,7 @@
 #include "led.h"
 #include "config.h"
 #include "provision.h"
+#include "softap.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "esp_wifi.h"
@@ -47,7 +48,7 @@ static SemaphoreHandle_t s_wifi_mutex = NULL;  // Protects WiFi reconfiguration 
 static int s_retry_count = 0;
 static int s_active_profile = 0;
 static bool s_time_synced = false;
-static bool s_softap_active = false;
+static volatile bool s_softap_active = false;
 static uint32_t s_consecutive_fails = 0;
 static uint32_t s_total_connects = 0;
 static uint32_t s_total_disconnects = 0;
@@ -600,17 +601,20 @@ esp_err_t network_start_wifi(void)
     // Lock WiFi mutex for atomic start sequence
     if (s_wifi_mutex) xSemaphoreTake(s_wifi_mutex, pdMS_TO_TICKS(5000));
 
-    // Start WiFi FIRST so we can scan
-    esp_wifi_stop();
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Use APSTA if SoftAP is active, otherwise pure STA
+    // If SoftAP is active, don't stop WiFi (would kill SoftAP).
+    // Instead, just disconnect and reconfigure the STA side.
     if (network_is_softap_active()) {
+        ESP_LOGI(TAG, "SoftAP active — reconfiguring STA without WiFi stop");
+        // Disconnect STA (SoftAP keeps running)
+        esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(100));
+        // Keep APSTA mode
         esp_wifi_set_mode(WIFI_MODE_APSTA);
-        ESP_LOGI(TAG, "WiFi mode: APSTA (SoftAP active)");
     } else {
+        // Stop/restart WiFi to apply mode and config changes
+        esp_wifi_stop();
+        vTaskDelay(pdMS_TO_TICKS(100));
         esp_wifi_set_mode(WIFI_MODE_STA);
-        ESP_LOGI(TAG, "WiFi mode: STA");
     }
 
     wifi_config_t wifi_config = { 0 };
@@ -620,7 +624,7 @@ esp_err_t network_start_wifi(void)
             sizeof(wifi_config.sta.password) - 1);
     wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;  // best guess, scan verifies
     wifi_config.sta.failure_retry_cnt = 3;
 
     // Apply max TX power BEFORE esp_wifi_start
@@ -632,13 +636,17 @@ esp_err_t network_start_wifi(void)
         return err;
     }
 
-    err = esp_wifi_start();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "wifi_start failed: %s", esp_err_to_name(err));
-        return err;
+    // Start WiFi if SoftAP didn't already start it
+    if (!network_is_softap_active()) {
+        err = esp_wifi_start();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "wifi_start failed: %s", esp_err_to_name(err));
+            return err;
+        }
     }
 
-    // If SoftAP is active, reconfigure AP interface (esp_wifi_stop killed it)
+    // If SoftAP was active, AP survived (we didn't call esp_wifi_stop).
+    // Hot-reconfigure the AP interface with correct config.
     if (network_is_softap_active()) {
         wifi_config_t ap_cfg = { 0 };
         strncpy((char *)ap_cfg.ap.ssid, SOFTAP_SSID, 32);
@@ -715,6 +723,15 @@ void network_wifi_task(void *pvParameters)
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(WIFI_RECONNECT_POLL_MS));
+
+        // Check if SoftAP trigger flag was set (20+ consecutive failures)
+        // but SoftAP hasn't actually been started yet
+        if (s_softap_active && !softap_is_active()) {
+            ESP_LOGI(TAG, "SoftAP trigger active — starting emergency dashboard");
+            if (softap_start() != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to start SoftAP from trigger");
+            }
+        }
 
         EventBits_t bits = xEventGroupGetBits(wifi_event_group);
 

@@ -2,6 +2,7 @@
 #include "event_log.h"
 #include "led.h"
 #include "network.h"
+#include "health.h"
 #include "config.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
@@ -112,6 +113,7 @@ static esp_err_t perform_ota(const char *firmware_url)
     ESP_LOGI(TAG, "OTA successful, restarting...");
     event_log_write(EVT_OTA_SUCCESS);
     led_send(LED_PATTERN_TAG);
+    health_mark_clean_reboot();  // intentional reboot — don't count as crash
 
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
@@ -165,7 +167,12 @@ esp_err_t ota_check_update(void)
     err = perform_ota(OTA_FIRMWARE_URL);
     update_in_progress = false;
 
-    return err;
+    if (err != ESP_OK) {
+        // Download failed — caller should retry with multi-attempt chain
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    return err;  // Should never reach here (perform_ota reboots on success)
 }
 
 esp_err_t ota_init(void)
@@ -173,13 +180,16 @@ esp_err_t ota_init(void)
     const esp_partition_t *running = esp_ota_get_running_partition();
     ESP_LOGI(TAG, "Running partition: %s", running ? running->label : "unknown");
 
+    // NOTE: Do NOT call esp_ota_mark_app_valid_cancel_rollback() here!
+    // The health monitor's self-test (health.c) runs after all subsystems
+    // are initialized and is the SOLE confirmer of OTA. If the self-test
+    // passes, it confirms. If not, the bootloader rolls back.
+    // This is the emergency hatch — never weld it shut early.
+
     esp_ota_img_states_t ota_state;
     esp_err_t err = esp_ota_get_state_partition(running, &ota_state);
-    if (err == ESP_OK) {
-        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-            ESP_LOGI(TAG, "New firmware booted, confirming...");
-            esp_ota_mark_app_valid_cancel_rollback();
-        }
+    if (err == ESP_OK && ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+        ESP_LOGI(TAG, "Running in PENDING_VERIFY — awaiting self-test confirmation");
     }
 
     return ESP_OK;
@@ -234,15 +244,17 @@ void ota_task(void *pvParameters)
             esp_err_t err = ota_check_update();
             if (err == ESP_OK) {
                 ESP_LOGI(TAG, "[DBG] ota_task: check OK (up to date or updated)");
-            } else {
-                ESP_LOGW(TAG, "[DBG] ota_task: check returned %s", esp_err_to_name(err));
-                // If check indicates update needed but failed, retry with 3-attempt chain
-                if (err == ESP_ERR_INVALID_VERSION) {
-                    err = ota_perform_with_retries();
-                    if (err != ESP_OK) {
-                        ESP_LOGE(TAG, "All OTA retries failed, will retry in 60s");
-                    }
+            } else if (err == ESP_ERR_NOT_FOUND) {
+                // New version was found but download failed — retry with multi-attempt
+                ESP_LOGW(TAG, "[DBG] ota_task: OTA download failed, retrying...");
+                err = ota_perform_with_retries();
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "All OTA retries failed, will retry in 60s");
                 }
+            } else {
+                // Version check failed (network etc) — just log, retry on next poll
+                ESP_LOGW(TAG, "[DBG] ota_task: check failed (%s), will retry in 60s",
+                         esp_err_to_name(err));
             }
         } else {
             ESP_LOGD(TAG, "[DBG] ota_task: WiFi not connected, skipping");

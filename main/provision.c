@@ -1,5 +1,6 @@
 #include "provision.h"
 #include "config.h"
+#include "health.h"
 #include "esp_http_client.h"
 #include "cJSON.h"
 #include "nvs_flash.h"
@@ -172,7 +173,7 @@ void factory_reset(void)
     ESP_LOGW(TAG, "⚠️  FACTORY RESET INITIATED ⚠️");
     
     // ── Log the event ──
-    // event_log_write(EVT_FACTORY_RESET);  // uncomment when event type added
+    event_log_write(EVT_FACTORY_RESET);
     
     // ── Erase NVS (WiFi creds, sequence numbers, everything) ──
     nvs_flash_erase();
@@ -195,6 +196,7 @@ void factory_reset(void)
         esp_err_t e = esp_ota_set_boot_partition(factory);
         if (e == ESP_OK) {
             ESP_LOGI(TAG, "✅ Boot set to factory partition. Rebooting...");
+            health_mark_clean_reboot();  // intentional factory reset
             esp_restart();
         } else {
             ESP_LOGE(TAG, "Failed to set factory boot: %s", esp_err_to_name(e));
@@ -206,6 +208,7 @@ void factory_reset(void)
             ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
         if (ota0) {
             esp_ota_set_boot_partition(ota0);
+            health_mark_clean_reboot();  // intentional fallback
             esp_restart();
         }
     }

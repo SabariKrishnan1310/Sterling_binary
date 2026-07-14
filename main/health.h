@@ -20,10 +20,9 @@ typedef struct __attribute__((packed)) {
     uint32_t boot_count;      // Total boots
     uint32_t crash_count;     // Consecutive crash count (resets on clean boot)
     uint32_t last_reset_reason;
-    uint32_t last_crash_pc;
-    uint32_t last_crash_sp;
     uint32_t min_heap_seen;   // Lowest heap observed
     uint32_t uptime_at_crash; // Uptime seconds when last crash occurred
+    uint32_t clean_reboot;    // Set before intentional reboot, cleared on boot
 } rtc_health_t;
 
 // ============================================================
@@ -52,6 +51,13 @@ void health_monitor_task(void *pvParameters);
  * Call from panic handler or before esp_restart() in error paths.
  */
 void health_record_crash(void);
+
+/**
+ * Mark this shutdown as intentional (clean reboot).
+ * Call before esp_restart() for OTA success, system reboot, etc.
+ * The shutdown handler will NOT record a crash if this is set.
+ */
+void health_mark_clean_reboot(void);
 
 /**
  * Get current RTC health data (for diagnostics endpoint).

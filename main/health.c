@@ -34,70 +34,104 @@ static const char *TAG = "health";
 RTC_DATA_ATTR static rtc_health_t s_rtc = { 0 };
 
 // ============================================================
-// INIT
+// INIT — THE EMERGENCY HATCH
+// ============================================================
+// Boot loop detection works via TWO mechanisms:
+//
+// 1. RTC crash counter (primary) — health_record_crash() is called
+//    by the panic handler BEFORE every crash+restart. If crash_count
+//    reaches RTC_BOOT_LOOP_THRESHOLD (5), we roll back.
+//    RTC survives soft reboot but NOT power cycle.
+//
+// 2. OTA partition state (secondary) — if the running partition is
+//    in PENDING_VERIFY state, the previous boot did NOT confirm OTA
+//    (meaning it crashed before the self-test could run, or the
+//    self-test failed). We increment crash_count in this case too.
+//
+// These two mechanisms together provide coverage even if the panic
+// handler fails to fire (e.g., hardware WDT reset).
 // ============================================================
 
 void health_init(void)
 {
-    // Check if we have valid RTC data from previous boot
-    if (s_rtc.magic == RTC_HEALTH_MAGIC) {
-        ESP_LOGW(TAG, "=== CRASH RECOVERY DATA ===");
-        ESP_LOGW(TAG, "  Previous uptime: %lu seconds", (unsigned long)s_rtc.uptime_at_crash);
-        ESP_LOGW(TAG, "  Crash count: %lu", (unsigned long)s_rtc.crash_count);
-        ESP_LOGW(TAG, "  Reset reason: %lu", (unsigned long)s_rtc.last_reset_reason);
-        ESP_LOGW(TAG, "  Crash PC: 0x%08lx", (unsigned long)s_rtc.last_crash_pc);
-        ESP_LOGW(TAG, "  Min heap: %lu bytes", (unsigned long)s_rtc.min_heap_seen);
+    // ═══ ALWAYS set magic — makes RTC data valid for next boot ═══
+    // This must happen FIRST so that if we crash during init, the
+    // next boot will find valid RTC data.
+    s_rtc.magic = RTC_HEALTH_MAGIC;
 
-        // ═══ BOOT LOOP DETECTION — THE EMERGENCY HATCH ═══
-        // If device has crashed RTC_BOOT_LOOP_THRESHOLD times in a row
-        // (soft reboots only — RTC survives those), rollback immediately.
-        // This works even if NVS is completely corrupted.
-        if (s_rtc.crash_count >= RTC_BOOT_LOOP_THRESHOLD) {
-            ESP_LOGE(TAG, "╔══════════════════════════════════════════╗");
-            ESP_LOGE(TAG, "║  BOOT LOOP DETECTED (%lu crashes!)     ║", 
-                     (unsigned long)s_rtc.crash_count);
-            ESP_LOGE(TAG, "║  Rolling back to previous firmware...  ║");
-            ESP_LOGE(TAG, "╚══════════════════════════════════════════╝");
-            
-            // Clear crash count so we don't loop forever
-            s_rtc.crash_count = 0;
-            
-            // Find the other OTA partition and boot from it
-            const esp_partition_t *running = esp_ota_get_running_partition();
-            if (running) {
-                esp_ota_img_states_t state;
-                if (esp_ota_get_state_partition(running, &state) == ESP_OK) {
-                    if (state == ESP_OTA_IMG_PENDING_VERIFY) {
-                        // We're in pending verify — just don't confirm, bootloader rolls back
-                        ESP_LOGE(TAG, "NOT confirming OTA — bootloader will rollback");
-                        // Do NOT call esp_ota_mark_app_valid_cancel_rollback()
-                        // The bootloader's timeout will handle rollback
-                    } else {
-                        // Already confirmed — need to manually switch
-                        esp_partition_type_t other_type = 
-                            (running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0) ?
-                            ESP_PARTITION_SUBTYPE_APP_OTA_1 :
-                            ESP_PARTITION_SUBTYPE_APP_OTA_0;
-                        const esp_partition_t *other = esp_partition_find_first(
-                            ESP_PARTITION_TYPE_APP, other_type, NULL);
-                        if (other) {
-                            ESP_LOGE(TAG, "Switching to partition: %s", other->label);
-                            esp_ota_set_boot_partition(other);
-                        }
-                    }
+    // ═══ OTA partition-based crash detection ═══
+    // If the partition is still PENDING_VERIFY, the previous boot
+    // didn't confirm OTA = it crashed before self-test.
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    bool state_valid = false;
+    if (running) {
+        if (esp_ota_get_state_partition(running, &state) == ESP_OK) {
+            state_valid = true;
+            if (state == ESP_OTA_IMG_PENDING_VERIFY) {
+                ESP_LOGW(TAG, "Previous boot did NOT confirm OTA (PENDING_VERIFY)");
+                ESP_LOGW(TAG, "Incrementing crash count — crash before or during self-test");
+                s_rtc.crash_count++;
+            }
+        }
+    }
+
+    // ═══ Log RTC data from previous boot ═══
+    ESP_LOGI(TAG, "=== BOOT #%lu ===", (unsigned long)(s_rtc.boot_count + 1));
+    if (s_rtc.crash_count > 0) {
+        ESP_LOGW(TAG, "  Consecutive crashes: %lu", (unsigned long)s_rtc.crash_count);
+        ESP_LOGW(TAG, "  Previous uptime: %lu seconds", (unsigned long)s_rtc.uptime_at_crash);
+    }
+    ESP_LOGI(TAG, "  Reset reason: %lu", (unsigned long)s_rtc.last_reset_reason);
+    ESP_LOGI(TAG, "  Min heap seen: %lu bytes", (unsigned long)s_rtc.min_heap_seen);
+
+    // ═══ BOOT LOOP DETECTION — THE EMERGENCY HATCH ═══
+    if (s_rtc.crash_count >= RTC_BOOT_LOOP_THRESHOLD) {
+        ESP_LOGE(TAG, "╔══════════════════════════════════════════╗");
+        ESP_LOGE(TAG, "║  BOOT LOOP DETECTED (%lu crashes!)     ║",
+                 (unsigned long)s_rtc.crash_count);
+        ESP_LOGE(TAG, "║  Rolling back to previous firmware...  ║");
+        ESP_LOGE(TAG, "╚══════════════════════════════════════════╝");
+
+        // Clear crash count so we don't loop forever on rollback
+        s_rtc.crash_count = 0;
+
+        if (running && state_valid && state == ESP_OTA_IMG_PENDING_VERIFY) {
+            // Still pending — just don't confirm. Bootloader times out and rolls back.
+            ESP_LOGE(TAG, "Partition is PENDING_VERIFY — NOT confirming. Bootloader will rollback.");
+            // DO NOT call esp_ota_mark_app_valid_cancel_rollback()
+        } else if (running) {
+            // Already confirmed — need to manually switch to other OTA partition
+            esp_partition_subtype_t other_subtype =
+                (running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0) ?
+                ESP_PARTITION_SUBTYPE_APP_OTA_1 :
+                ESP_PARTITION_SUBTYPE_APP_OTA_0;
+            const esp_partition_t *other = esp_partition_find_first(
+                ESP_PARTITION_TYPE_APP, other_subtype, NULL);
+            if (other) {
+                ESP_LOGE(TAG, "Switching boot partition to: %s", other->label);
+                esp_ota_set_boot_partition(other);
+            } else {
+                ESP_LOGE(TAG, "FATAL: No other OTA partition found! Trying factory...");
+                const esp_partition_t *factory = esp_partition_find_first(
+                    ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+                if (factory) {
+                    esp_ota_set_boot_partition(factory);
+                } else {
+                    ESP_LOGE(TAG, "FATAL: No factory partition either!");
                 }
             }
-            
-            ESP_LOGE(TAG, "Rebooting in 2 seconds...");
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            esp_restart();
-            return;  // Never reaches here
         }
 
-        if (s_rtc.crash_count >= 2) {
-            ESP_LOGW(TAG, "WARNING: %lu consecutive crashes. Monitor closely.",
-                     (unsigned long)s_rtc.crash_count);
-        }
+        ESP_LOGE(TAG, "Rebooting in 2 seconds...");
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        esp_restart();
+        return;  // Never reaches here
+    }
+
+    if (s_rtc.crash_count >= 2) {
+        ESP_LOGW(TAG, "WARNING: %lu consecutive crashes. Monitor closely.",
+                 (unsigned long)s_rtc.crash_count);
     }
 
     // Initialize RTC health data for this boot
@@ -105,17 +139,53 @@ void health_init(void)
     s_rtc.min_heap_seen = esp_get_free_heap_size();
     s_rtc.last_reset_reason = rtc_get_reset_reason(0);
 
+    // Clear clean_reboot flag set by previous boot's health_mark_clean_reboot().
+    // This ensures that if we crash later in THIS boot, the shutdown handler
+    // will correctly detect it as a crash (clean_reboot is 0).
+    s_rtc.clean_reboot = 0;
+
+    // Register shutdown handler (called before every esp_restart, including
+    // crashes and panics). Checks clean_reboot flag to distinguish intentional
+    // restarts from crashes.
+    esp_err_t sh_err = esp_register_shutdown_handler(&health_shutdown_handler);
+    if (sh_err != ESP_OK) {
+        ESP_LOGW(TAG, "Shutdown handler registration: %s", esp_err_to_name(sh_err));
+    }
+
     ESP_LOGI(TAG, "Health monitor initialized (boot #%lu, crashes=%lu)",
              (unsigned long)s_rtc.boot_count, (unsigned long)s_rtc.crash_count);
 }
 
 void health_record_crash(void)
 {
+    // Don't record crash if this is a clean reboot
+    if (s_rtc.clean_reboot) {
+        s_rtc.clean_reboot = 0;
+        return;
+    }
     s_rtc.magic = RTC_HEALTH_MAGIC;
     s_rtc.crash_count++;
     s_rtc.uptime_at_crash = (uint32_t)(esp_timer_get_time() / 1000000);
     s_rtc.last_reset_reason = rtc_get_reset_reason(0);
     // RTC memory is direct-mapped, no flash write needed
+}
+
+void health_mark_clean_reboot(void)
+{
+    s_rtc.clean_reboot = 1;
+}
+
+// ═══ Shutdown handler ═══
+// Registered with esp_register_shutdown_handler().
+// Called BEFORE every esp_restart(), including crashes and panics.
+// If clean_reboot was NOT set (e.g., crash, abort, WDT), records the
+// crash in RTC so the next boot knows we crashed.
+static void health_shutdown_handler(void)
+{
+    if (!s_rtc.clean_reboot) {
+        health_record_crash();
+    }
+    s_rtc.clean_reboot = 0;
 }
 
 const rtc_health_t *health_get_rtc_data(void)

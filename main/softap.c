@@ -17,6 +17,7 @@
 #include "event_log.h"
 #include "led.h"
 #include "provision.h"
+#include "health.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -846,6 +847,7 @@ static esp_err_t handle_system_cmd(httpd_req_t *req)
         httpd_resp_send(req, json, strlen(json));
         free(json);
         vTaskDelay(pdMS_TO_TICKS(1000));
+        health_mark_clean_reboot();  // intentional reboot
         esp_restart();
 
     } else if (strcmp(cmd, "factory_reset") == 0) {

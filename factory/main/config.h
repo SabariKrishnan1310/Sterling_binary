@@ -37,10 +37,10 @@
 // ======================================================
 
 #define OTA_FIRMWARE_URL \
-"https://raw.githubusercontent.com/SabariKrishnan1310/Sterling_Prod/main/firmware.bin"
+"https://raw.githubusercontent.com/SabariKrishnan1310/Sterling_binary/main/firmware.bin"
 
 #define OTA_VERSION_URL \
-"https://raw.githubusercontent.com/SabariKrishnan1310/Sterling_Prod/main/version.txt"
+"https://raw.githubusercontent.com/SabariKrishnan1310/Sterling_binary/main/version.txt"
 
 // ======================================================
 // TX POWER — MAX FOR PCB TRACE ANTENNA
