@@ -186,6 +186,22 @@ bool health_is_safe_mode(void)
 }
 
 // ============================================================
+// RESET BOOT-LOOP STATE
+// ============================================================
+// Called right before a successful OTA (or factory reset) reboots into a
+// freshly-installed firmware. The new firmware must get a CLEAN boot-loop
+// counter — otherwise it would inherit the old broken firmware's high
+// crash_count and immediately re-enter safe mode, making OTA recovery a
+// dead end (the only escape would be a power cycle). Clearing both the
+// counter and the safe_mode flag gives the new firmware a fair chance.
+void health_reset_boot_loop_state(void)
+{
+    s_rtc.crash_count = 0;
+    s_rtc.safe_mode = 0;
+    ESP_LOGI(TAG, "Boot-loop state RESET (crash_count=0, safe_mode=0) for new firmware");
+}
+
+// ============================================================
 // SELF-TEST ON BOOT
 // ============================================================
 // Runs after init. Confirms new firmware is working.
@@ -388,24 +404,34 @@ void health_monitor_task(void *pvParameters)
     // Run boot self-test FIRST
     run_boot_self_test();
 
-    const TickType_t CHECK_INTERVAL = pdMS_TO_TICKS(300000);  // 5 minutes
+    // Heavy red-team checks run every 5 minutes...
+    const TickType_t HEAVY_CHECK_INTERVAL = pdMS_TO_TICKS(300000);  // 5 minutes
+    // ...but the WDT timeout is only 30s, so we MUST feed the watchdog far
+    // more often than that. We reset every loop (1s) and only run the heavy
+    // checks on the 5-minute cadence. A subscribed task that fails to reset
+    // within WATCHDOG_TIMEOUT_SECONDS trips a panic — so the monitor itself
+    // must never go that long without resetting.
+    TickType_t last_heavy_check = xTaskGetTickCount();
 
     while (1) {
-        vTaskDelay(CHECK_INTERVAL);
+        // Feed WDT every loop — this is what keeps the device alive.
+        esp_task_wdt_reset();
 
-        // Update min heap
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        // Update min heap (cheap, do every loop)
         uint32_t heap = esp_get_free_heap_size();
         if (heap < s_rtc.min_heap_seen) {
             s_rtc.min_heap_seen = heap;
         }
 
-        // Run red team checks
-        red_team_check_stacks();
-        red_team_check_heap();
-        red_team_check_wifi();
-        red_team_check_tasks();
-
-        // Feed WDT
-        esp_task_wdt_reset();
+        // Heavy red-team checks on the 5-minute cadence
+        if ((xTaskGetTickCount() - last_heavy_check) >= HEAVY_CHECK_INTERVAL) {
+            last_heavy_check = xTaskGetTickCount();
+            red_team_check_stacks();
+            red_team_check_heap();
+            red_team_check_wifi();
+            red_team_check_tasks();
+        }
     }
 }

@@ -197,6 +197,7 @@ void factory_reset(void)
         esp_err_t e = esp_ota_set_boot_partition(factory);
         if (e == ESP_OK) {
             ESP_LOGI(TAG, "✅ Boot set to factory partition. Rebooting...");
+            health_reset_boot_loop_state();  // clean slate for recovery firmware
             health_mark_clean_reboot();  // intentional factory reset
             esp_restart();
         } else {
@@ -209,6 +210,7 @@ void factory_reset(void)
             ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
         if (ota0) {
             esp_ota_set_boot_partition(ota0);
+            health_reset_boot_loop_state();  // clean slate for recovery firmware
             health_mark_clean_reboot();  // intentional fallback
             esp_restart();
         }

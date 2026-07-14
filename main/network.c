@@ -49,6 +49,7 @@ static int s_retry_count = 0;
 static int s_active_profile = 0;
 static bool s_time_synced = false;
 static volatile bool s_softap_active = false;
+static bool s_wifi_started = false;
 static uint32_t s_consecutive_fails = 0;
 static uint32_t s_total_connects = 0;
 static uint32_t s_total_disconnects = 0;
@@ -602,6 +603,27 @@ esp_err_t network_init(void)
 }
 
 // ============================================================
+// ENSURE WIFI RADIO STARTED (idempotent)
+// ============================================================
+// The radio must be started for ANY interface (STA or AP) to come up.
+// network_init() only calls esp_wifi_init(); the actual esp_wifi_start()
+// is deferred. Because SoftAP is now brought up FIRST (before the wifi
+// task), we must be able to start the radio from softap_start() too, and
+// network_start_wifi() must not skip the start just because SoftAP is
+// already active. This helper is safe to call multiple times.
+esp_err_t network_ensure_wifi_started(void)
+{
+    if (s_wifi_started) return ESP_OK;
+    esp_err_t err = esp_wifi_start();
+    if (err == ESP_OK || err == ESP_ERR_WIFI_STATE) {
+        s_wifi_started = true;
+        return ESP_OK;
+    }
+    ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+    return err;
+}
+
+// ============================================================
 // NETWORK START WIFI — SCAN BEFORE CONNECT
 // ============================================================
 
@@ -629,6 +651,7 @@ esp_err_t network_start_wifi(void)
     } else {
         // Stop/restart WiFi to apply mode and config changes
         esp_wifi_stop();
+        s_wifi_started = false;
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_wifi_set_mode(WIFI_MODE_STA);
     }
@@ -652,13 +675,13 @@ esp_err_t network_start_wifi(void)
         return err;
     }
 
-    // Start WiFi if SoftAP didn't already start it
-    if (!network_is_softap_active()) {
-        err = esp_wifi_start();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "wifi_start failed: %s", esp_err_to_name(err));
-            return err;
-        }
+    // Start the WiFi radio if it isn't running yet. SoftAP may have been
+    // brought up first at boot (before this task), so the radio might not
+    // be up. network_ensure_wifi_started() is idempotent.
+    esp_err_t start_err = network_ensure_wifi_started();
+    if (start_err != ESP_OK) {
+        ESP_LOGE(TAG, "wifi_start failed: %s", esp_err_to_name(start_err));
+        return start_err;
     }
 
     // If SoftAP was active, AP survived (we didn't call esp_wifi_stop).
@@ -699,6 +722,7 @@ esp_err_t network_start_wifi(void)
         if (best >= 0) {
             // Switch to best found profile
             esp_wifi_stop();
+            s_wifi_started = false;
             vTaskDelay(pdMS_TO_TICKS(100));
             s_active_profile = best;
             memset(&wifi_config, 0, sizeof(wifi_config));
@@ -712,7 +736,7 @@ esp_err_t network_start_wifi(void)
             wifi_config.sta.failure_retry_cnt = 3;
             apply_wifi_radio_settings();
             esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-            esp_wifi_start();
+            network_ensure_wifi_started();
         } else {
             ESP_LOGW(TAG, "No matching AP found, will retry on next poll");
         }

@@ -14,6 +14,10 @@ extern EventGroupHandle_t wifi_event_group;
 
 esp_err_t network_init(void);
 esp_err_t network_start_wifi(void);
+// Idempotently start the WiFi radio (esp_wifi_start). Safe to call multiple
+// times. Needed because SoftAP is brought up before the wifi task, so the
+// radio may not be running yet when the AP interface is configured.
+esp_err_t network_ensure_wifi_started(void);
 esp_err_t network_send_tap_single(const char *uid);
 void upload_task(void *pvParameters);
 void network_wifi_task(void *pvParameters);

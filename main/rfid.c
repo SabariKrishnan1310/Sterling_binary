@@ -143,8 +143,9 @@ void rfid_task(void *pvParameters)
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "[DBG] rfid_task: retry failed, idling");
             while (1) {
+                // Keep the WDT fed (timeout is 30s) — reset every loop.
                 esp_task_wdt_reset();
-                vTaskDelay(pdMS_TO_TICKS(60000));
+                vTaskDelay(pdMS_TO_TICKS(5000));
             }
         }
     }

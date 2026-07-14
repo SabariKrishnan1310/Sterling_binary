@@ -965,6 +965,18 @@ esp_err_t softap_start(void)
         }
     }
 
+    // Start the WiFi radio if it isn't running yet. SoftAP is brought up
+    // FIRST at boot (before the wifi task), so the radio is not started
+    // until here. This is what actually brings the AP interface up. In
+    // normal mode the wifi task may have already started it — this call is
+    // idempotent and safe.
+    esp_err_t start_err = network_ensure_wifi_started();
+    if (start_err != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi radio failed to start: %s — SoftAP FAILED",
+                  esp_err_to_name(start_err));
+        return start_err;
+    }
+
     wifi_config_t ap_config = { 0 };
     strncpy((char *)ap_config.ap.ssid, SOFTAP_SSID, 32);
     strncpy((char *)ap_config.ap.password, SOFTAP_PASSWORD, 64);

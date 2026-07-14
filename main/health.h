@@ -75,6 +75,15 @@ const rtc_health_t *health_get_rtc_data(void);
 bool health_is_safe_mode(void);
 
 /**
+ * Reset the boot-loop counters (crash_count + safe_mode) to zero.
+ * Call immediately before rebooting into a freshly-installed firmware
+ * (successful OTA or factory reset) so the new firmware starts with a
+ * clean slate and is not trapped in safe mode by the previous firmware's
+ * crash history.
+ */
+void health_reset_boot_loop_state(void);
+
+/**
  * Register a task for stack monitoring.
  * Call after xTaskCreatePinnedToCore succeeds.
  */

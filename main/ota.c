@@ -113,6 +113,11 @@ static esp_err_t perform_ota(const char *firmware_url)
     ESP_LOGI(TAG, "OTA successful, restarting...");
     event_log_write(EVT_OTA_SUCCESS);
     led_send(LED_PATTERN_TAG);
+
+    // Give the newly-installed firmware a clean boot-loop slate so it is
+    // not trapped in safe mode by THIS firmware's crash history.
+    health_reset_boot_loop_state();
+
     health_mark_clean_reboot();  // intentional reboot — don't count as crash
 
     vTaskDelay(pdMS_TO_TICKS(1000));

@@ -102,23 +102,34 @@ void app_main(void)
     health_init();  // Reads crash data from RTC; may set safe_mode
 
     // ═══ STEP 4 — SAFE MODE GATE ═══
-    // Boot loop detected: run ONLY SoftAP + health monitor. No RFID, no
-    // upload, no OTA, no WiFi-connect. The dashboard stays up so the user
-    // can OTA a known-good firmware or reboot to roll back.
+    // Boot loop detected: run ONLY SoftAP + health monitor + OTA-recovery.
+    // No RFID, no upload, no normal WiFi-connect task. The dashboard stays
+    // up so the user can connect WiFi and the OTA task pulls a known-good
+    // firmware from the server (the recovery path). Without OTA, safe mode
+    // would be a dead end with no way to recover over the air.
     if (health_is_safe_mode()) {
         ESP_LOGE(TAG, "══════════════════════════════════════════════════");
-        ESP_LOGE(TAG, "  SAFE MODE — SoftAP-only. RFID/upload/OTA disabled.");
-        ESP_LOGE(TAG, "  Recovery dashboard: http://%s", SOFTAP_IP_ADDR);
+        ESP_LOGE(TAG, "  SAFE MODE — SoftAP-only recovery.");
+        ESP_LOGE(TAG, "  RFID/upload/normal-WiFi disabled. OTA recovery ON.");
+        ESP_LOGE(TAG, "  Dashboard: http://%s (connect WiFi to pull good FW)",
+                  SOFTAP_IP_ADDR);
         ESP_LOGE(TAG, "══════════════════════════════════════════════════");
 
+        // ota_task calls ota_init() internally; it only acts when WiFi is
+        // connected (via the dashboard), so it is safe to run here.
         xTaskCreatePinnedToCore(led_task, "led_task", LED_STACK_SIZE, NULL, 1, NULL, 1);
         xTaskCreatePinnedToCore(health_monitor_task, "health", 8192, NULL, 1, &health_handle, 0);
+        xTaskCreatePinnedToCore(ota_task, "ota_task", OTA_STACK_SIZE, NULL, 1, &ota_handle, 0);
 
         if (health_handle) {
             health_register_task("health", health_handle, 8192);
             register_watchdog(health_handle, "health");
         }
-        ESP_LOGI(TAG, "Safe mode: minimal tasks started. SoftAP remains up.");
+        if (ota_handle) {
+            health_register_task("ota", ota_handle, OTA_STACK_SIZE);
+            register_watchdog(ota_handle, "ota");
+        }
+        ESP_LOGI(TAG, "Safe mode: SoftAP + health + OTA(recovery) started.");
         vTaskDelete(NULL);
     }
 
