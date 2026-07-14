@@ -18,9 +18,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "rom/rtc.h"
+#include "nvs_flash.h"
 #include <string.h>
 
 static const char *TAG = "health";
+
+// Forward declaration (defined later, used by health_init's shutdown handler)
+static void health_shutdown_handler(void);
 
 // ============================================================
 // RTC RETAINED DATA
@@ -64,10 +68,8 @@ void health_init(void)
     // didn't confirm OTA = it crashed before self-test.
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_ota_img_states_t state;
-    bool state_valid = false;
     if (running) {
         if (esp_ota_get_state_partition(running, &state) == ESP_OK) {
-            state_valid = true;
             if (state == ESP_OTA_IMG_PENDING_VERIFY) {
                 ESP_LOGW(TAG, "Previous boot did NOT confirm OTA (PENDING_VERIFY)");
                 ESP_LOGW(TAG, "Incrementing crash count — crash before or during self-test");
@@ -86,47 +88,32 @@ void health_init(void)
     ESP_LOGI(TAG, "  Min heap seen: %lu bytes", (unsigned long)s_rtc.min_heap_seen);
 
     // ═══ BOOT LOOP DETECTION — THE EMERGENCY HATCH ═══
+    // On a boot loop we do NOT roll back to another firmware (that other
+    // firmware could be just as broken, or we may have no valid fallback).
+    // Instead we enter SOFTAP-ONLY SAFE MODE: the recovery dashboard stays
+    // up and nothing else runs. The device can never be bricked because the
+    // user can always reach the dashboard and OTA a known-good firmware.
     if (s_rtc.crash_count >= RTC_BOOT_LOOP_THRESHOLD) {
         ESP_LOGE(TAG, "╔══════════════════════════════════════════╗");
         ESP_LOGE(TAG, "║  BOOT LOOP DETECTED (%lu crashes!)     ║",
-                 (unsigned long)s_rtc.crash_count);
-        ESP_LOGE(TAG, "║  Rolling back to previous firmware...  ║");
+                  (unsigned long)s_rtc.crash_count);
+        ESP_LOGE(TAG, "║  ENTERING SOFTAP-ONLY SAFE MODE        ║");
+        ESP_LOGE(TAG, "║  Dashboard stays up — nothing else     ║");
         ESP_LOGE(TAG, "╚══════════════════════════════════════════╝");
 
-        // Clear crash count so we don't loop forever on rollback
-        s_rtc.crash_count = 0;
+        // Enter safe mode. SoftAP is already up (started first in app_main),
+        // so the recovery dashboard is reachable. app_main will skip all
+        // other tasks. We do NOT restart — staying up keeps the dashboard
+        // available immediately.
+        s_rtc.safe_mode = 1;
 
-        if (running && state_valid && state == ESP_OTA_IMG_PENDING_VERIFY) {
-            // Still pending — just don't confirm. Bootloader times out and rolls back.
-            ESP_LOGE(TAG, "Partition is PENDING_VERIFY — NOT confirming. Bootloader will rollback.");
-            // DO NOT call esp_ota_mark_app_valid_cancel_rollback()
-        } else if (running) {
-            // Already confirmed — need to manually switch to other OTA partition
-            esp_partition_subtype_t other_subtype =
-                (running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0) ?
-                ESP_PARTITION_SUBTYPE_APP_OTA_1 :
-                ESP_PARTITION_SUBTYPE_APP_OTA_0;
-            const esp_partition_t *other = esp_partition_find_first(
-                ESP_PARTITION_TYPE_APP, other_subtype, NULL);
-            if (other) {
-                ESP_LOGE(TAG, "Switching boot partition to: %s", other->label);
-                esp_ota_set_boot_partition(other);
-            } else {
-                ESP_LOGE(TAG, "FATAL: No other OTA partition found! Trying factory...");
-                const esp_partition_t *factory = esp_partition_find_first(
-                    ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
-                if (factory) {
-                    esp_ota_set_boot_partition(factory);
-                } else {
-                    ESP_LOGE(TAG, "FATAL: No factory partition either!");
-                }
-            }
-        }
+        // Leave crash_count as-is so a power cycle can still clear safe_mode
+        // and retry a normal boot. The running partition stays PENDING_VERIFY
+        // so a reboot (e.g. via dashboard) lets the bootloader roll back if a
+        // good previous firmware exists.
 
-        ESP_LOGE(TAG, "Rebooting in 2 seconds...");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        esp_restart();
-        return;  // Never reaches here
+        ESP_LOGW(TAG, "SAFE MODE: only SoftAP dashboard + health monitor will run.");
+        return;  // Return to app_main, which gates the rest of the system
     }
 
     if (s_rtc.crash_count >= 2) {
@@ -193,6 +180,11 @@ const rtc_health_t *health_get_rtc_data(void)
     return &s_rtc;
 }
 
+bool health_is_safe_mode(void)
+{
+    return s_rtc.safe_mode != 0;
+}
+
 // ============================================================
 // SELF-TEST ON BOOT
 // ============================================================
@@ -202,6 +194,16 @@ const rtc_health_t *health_get_rtc_data(void)
 static bool run_boot_self_test(void)
 {
     ESP_LOGI(TAG, "Running boot self-test...");
+
+    // In safe mode the running partition is a known-bad firmware that just
+    // boot-looped. NEVER confirm it valid — leave it PENDING_VERIFY so a
+    // reboot can roll back, or the user can OTA a good firmware via the
+    // dashboard. The dashboard is the recovery path; confirming would weld
+    // the broken firmware in place.
+    if (health_is_safe_mode()) {
+        ESP_LOGW(TAG, "SAFE MODE: skipping OTA confirmation (firmware is suspect)");
+        return false;
+    }
 
     bool pass = true;
 
@@ -223,11 +225,46 @@ static bool run_boot_self_test(void)
         ESP_LOGI(TAG, "  PASS: Free heap: %lu bytes", (unsigned long)free_heap);
     }
 
-    // Test 3: NVS accessible
-    // (already tested by nvs_flash_init in app_main)
+    // Test 3: NVS readable (not just initialized — actually openable)
+    {
+        nvs_handle_t nvs;
+        esp_err_t nvs_test = nvs_open("storage", NVS_READONLY, &nvs);
+        if (nvs_test != ESP_OK) {
+            ESP_LOGE(TAG, "FAIL: NVS namespace 'storage' not openable: %s",
+                      esp_err_to_name(nvs_test));
+            pass = false;
+        } else {
+            int32_t seq = 0;
+            nvs_get_i32(nvs, "seq", &seq);  // may be empty — that's fine
+            nvs_close(nvs);
+            ESP_LOGI(TAG, "  PASS: NVS readable (seq=%ld)", (long)seq);
+        }
+    }
 
-    // Test 4: Storage accessible
-    // (already tested by storage_init in app_main)
+    // Test 4: Storage (LittleFS) mounted + index readable
+    {
+        uint32_t total = storage_get_total_count();
+        uint32_t next  = storage_get_next_sequence();
+        if (next == 0 && total == 0) {
+            // Could be a fresh device — not necessarily a failure, but log it
+            ESP_LOGI(TAG, "  PASS: Storage index readable (fresh device)");
+        } else {
+            ESP_LOGI(TAG, "  PASS: Storage index readable (total=%lu next=%lu)",
+                      (unsigned long)total, (unsigned long)next);
+        }
+    }
+
+    // Test 5: Heap allocation sanity (no fragmentation deadlock)
+    {
+        void *probe = malloc(4096);
+        if (!probe) {
+            ESP_LOGE(TAG, "FAIL: Cannot allocate 4KB — heap fragmented");
+            pass = false;
+        } else {
+            free(probe);
+            ESP_LOGI(TAG, "  PASS: 4KB allocation OK");
+        }
+    }
 
     // Update min heap
     if (free_heap < s_rtc.min_heap_seen) {

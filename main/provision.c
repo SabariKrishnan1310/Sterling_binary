@@ -1,6 +1,7 @@
 #include "provision.h"
 #include "config.h"
 #include "health.h"
+#include "event_log.h"
 #include "esp_http_client.h"
 #include "cJSON.h"
 #include "nvs_flash.h"

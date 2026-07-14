@@ -36,37 +36,6 @@ static void register_watchdog(TaskHandle_t task, const char *name)
     }
 }
 
-// SoftAP boot window: always active for first 2 minutes
-// then stops if WiFi is connected
-// EMERGENCY HATCH: Always attempts SoftAP, logs failure but doesn't crash
-static void softap_boot_window_task(void *pvParameters)
-{
-    ESP_LOGI(TAG, "SoftAP boot window: %ds (SSID: %s)",
-             SOFTAP_BOOT_WINDOW_MS / 1000, SOFTAP_SSID);
-
-    // Always attempt SoftAP — this is the emergency hatch
-    softap_init();
-    esp_err_t err = softap_start();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "SoftAP start failed (%s) — emergency hatch unavailable",
-                 esp_err_to_name(err));
-        ESP_LOGW(TAG, "Device will continue without SoftAP dashboard");
-    }
-
-    // Wait for boot window to expire
-    vTaskDelay(pdMS_TO_TICKS(SOFTAP_BOOT_WINDOW_MS));
-
-    // If WiFi is connected, we can stop SoftAP
-    if (softap_is_active()) {
-        EventBits_t bits = xEventGroupGetBits(wifi_event_group);
-        if (bits & WIFI_CONNECTED_BIT) {
-            ESP_LOGI(TAG, "WiFi connected, stopping SoftAP");
-            softap_stop();
-        }
-    }
-    vTaskDelete(NULL);
-}
-
 void app_main(void)
 {
     // ═══ CRITICAL: Do NOT confirm OTA here ═══
@@ -74,7 +43,7 @@ void app_main(void)
     // flash, heap, and partition are healthy. If self-test fails,
     // the bootloader rolls back to the previous firmware.
     // This is the emergency hatch — never weld it shut early.
-    
+
     // ── WDT init ──
     esp_task_wdt_config_t wdt_config = {
         .timeout_ms = WATCHDOG_TIMEOUT_SECONDS * 1000,
@@ -84,11 +53,12 @@ void app_main(void)
     esp_task_wdt_init(&wdt_config);
 
     ESP_LOGI(TAG, "Sterling v%s — Max TX Power + Scan + Round-Robin + SoftAP", FW_VERSION);
-    
+
     // ── Task handles ──
     TaskHandle_t rfid_handle = NULL;
     TaskHandle_t upload_handle = NULL;
     TaskHandle_t ota_handle = NULL;
+    TaskHandle_t health_handle = NULL;
 
     // ── Init NVS with corruption recovery ──
     esp_err_t nvs_err = nvs_flash_init();
@@ -101,12 +71,58 @@ void app_main(void)
         ESP_LOGE(TAG, "NVS init FAILED: %s", esp_err_to_name(nvs_err));
     }
 
-    // ── Init all subsystems ──
+    // ═══ STEP 1 — WIFI STACK (safe, no connect) ═══
+    // Must come before SoftAP. Non-fatal: if it fails we still try SoftAP
+    // in AP-only fallback so the recovery dashboard can come up.
+    esp_err_t net_err = network_init();
+    if (net_err != ESP_OK) {
+        ESP_LOGE(TAG, "network_init failed (%s) — will still attempt SoftAP",
+                  esp_err_to_name(net_err));
+    }
+
+    // ═══ STEP 2 — SOFTAP FIRST (the emergency hatch) ═══
+    // The recovery dashboard is brought up BEFORE anything risky so it is
+    // always reachable, even if the rest of the system crashes. This is the
+    // core of graceful degradation: the device can never be bricked because
+    // the user can always reach http://192.168.4.1 and recover it.
+    softap_init();
+    esp_err_t sap_err = softap_start();
+    if (sap_err != ESP_OK) {
+        ESP_LOGE(TAG, "SoftAP start FAILED (%s) — emergency hatch unavailable!",
+                  esp_err_to_name(sap_err));
+    } else {
+        ESP_LOGI(TAG, "SoftAP dashboard UP FIRST at http://%s (SSID: %s)",
+                  SOFTAP_IP_ADDR, SOFTAP_SSID);
+    }
+
+    // ═══ STEP 3 — storage / event log / health ═══
     storage_init();
     event_log_init();
     event_log_write(EVT_BOOT);
-    health_init();  // Must be BEFORE network_init — reads crash data from RTC
-    network_init();
+    health_init();  // Reads crash data from RTC; may set safe_mode
+
+    // ═══ STEP 4 — SAFE MODE GATE ═══
+    // Boot loop detected: run ONLY SoftAP + health monitor. No RFID, no
+    // upload, no OTA, no WiFi-connect. The dashboard stays up so the user
+    // can OTA a known-good firmware or reboot to roll back.
+    if (health_is_safe_mode()) {
+        ESP_LOGE(TAG, "══════════════════════════════════════════════════");
+        ESP_LOGE(TAG, "  SAFE MODE — SoftAP-only. RFID/upload/OTA disabled.");
+        ESP_LOGE(TAG, "  Recovery dashboard: http://%s", SOFTAP_IP_ADDR);
+        ESP_LOGE(TAG, "══════════════════════════════════════════════════");
+
+        xTaskCreatePinnedToCore(led_task, "led_task", LED_STACK_SIZE, NULL, 1, NULL, 1);
+        xTaskCreatePinnedToCore(health_monitor_task, "health", 8192, NULL, 1, &health_handle, 0);
+
+        if (health_handle) {
+            health_register_task("health", health_handle, 8192);
+            register_watchdog(health_handle, "health");
+        }
+        ESP_LOGI(TAG, "Safe mode: minimal tasks started. SoftAP remains up.");
+        vTaskDelete(NULL);
+    }
+
+    // ═══ STEP 5 — NORMAL BOOT: full system ═══
     ota_init();
     storage_dump_stats();
 
@@ -116,15 +132,11 @@ void app_main(void)
     xTaskCreatePinnedToCore(network_wifi_task, "wifi_task", WIFI_STACK_SIZE, NULL, 2, NULL,     0);
     xTaskCreatePinnedToCore(upload_task,"upload_task", UPLOAD_STACK_SIZE, NULL, 1, &upload_handle,0);
     xTaskCreatePinnedToCore(ota_task,   "ota_task",   OTA_STACK_SIZE,  NULL, 1, &ota_handle,   0);
-    
+
     // ── Factory trigger monitor ──
     xTaskCreatePinnedToCore(factory_trigger_monitor_task, "factory_mon", 4096, NULL, 1, NULL, 0);
 
-    // ── SoftAP boot window (always active for 2 min on boot) ──
-    xTaskCreatePinnedToCore(softap_boot_window_task, "softap_win", 8192, NULL, 1, NULL, 0);
-
     // ── Health monitor (red team + self-healing + crash tracking) ──
-    TaskHandle_t health_handle = NULL;
     xTaskCreatePinnedToCore(health_monitor_task, "health", 8192, NULL, 1, &health_handle, 0);
 
     // ── Register critical tasks with health monitor ──
@@ -138,7 +150,7 @@ void app_main(void)
     register_watchdog(upload_handle, "upload");
     register_watchdog(ota_handle, "ota");
 
-    ESP_LOGI(TAG, "All tasks started. SoftAP SSID: %s", SOFTAP_SSID);
+    ESP_LOGI(TAG, "All tasks started. SoftAP SSID: %s (always up)", SOFTAP_SSID);
 
     vTaskDelete(NULL);
 }

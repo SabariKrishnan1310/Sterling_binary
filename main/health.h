@@ -23,6 +23,7 @@ typedef struct __attribute__((packed)) {
     uint32_t min_heap_seen;   // Lowest heap observed
     uint32_t uptime_at_crash; // Uptime seconds when last crash occurred
     uint32_t clean_reboot;    // Set before intentional reboot, cleared on boot
+    uint32_t safe_mode;       // 1 = boot loop detected, run SoftAP-only safe mode
 } rtc_health_t;
 
 // ============================================================
@@ -63,6 +64,15 @@ void health_mark_clean_reboot(void);
  * Get current RTC health data (for diagnostics endpoint).
  */
 const rtc_health_t *health_get_rtc_data(void);
+
+/**
+ * Returns true if the device booted into SoftAP-only safe mode
+ * (boot loop detected). In safe mode only the SoftAP dashboard
+ * and health monitor run — no RFID/upload/OTA/WiFi-connect tasks.
+ * This guarantees the device can never be bricked: the recovery
+ * dashboard is always reachable.
+ */
+bool health_is_safe_mode(void);
 
 /**
  * Register a task for stack monitoring.

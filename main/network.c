@@ -559,14 +559,30 @@ esp_err_t network_init(void)
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    esp_err_t init_err = esp_wifi_init(&cfg);
+    if (init_err != ESP_OK) {
+        // Non-fatal: app_main will still attempt SoftAP in AP-only fallback.
+        ESP_LOGE(TAG, "esp_wifi_init FAILED (%s) — WiFi stack unavailable",
+                  esp_err_to_name(init_err));
+        return init_err;
+    }
 
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                        ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &instance_any_id));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                        IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &instance_got_ip));
+    init_err = esp_event_handler_instance_register(WIFI_EVENT,
+                        ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &instance_any_id);
+    if (init_err != ESP_OK) {
+        ESP_LOGE(TAG, "event handler register (WIFI) FAILED (%s)",
+                  esp_err_to_name(init_err));
+        return init_err;
+    }
+    init_err = esp_event_handler_instance_register(IP_EVENT,
+                        IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &instance_got_ip);
+    if (init_err != ESP_OK) {
+        ESP_LOGE(TAG, "event handler register (IP) FAILED (%s)",
+                  esp_err_to_name(init_err));
+        return init_err;
+    }
 
     (void)instance_any_id;
     (void)instance_got_ip;
