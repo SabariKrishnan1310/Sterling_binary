@@ -24,6 +24,8 @@ typedef struct __attribute__((packed)) {
     uint32_t uptime_at_crash; // Uptime seconds when last crash occurred
     uint32_t clean_reboot;    // Set before intentional reboot, cleared on boot
     uint32_t safe_mode;       // 1 = boot loop detected, run SoftAP-only safe mode
+    uint32_t ota_last_attempt_ver; // Parsed version last attempted via OTA (0 = none)
+    uint32_t ota_blacklist_ver;   // Version that failed to confirm; skip re-install
 } rtc_health_t;
 
 // ============================================================
@@ -82,6 +84,35 @@ bool health_is_safe_mode(void);
  * crash history.
  */
 void health_reset_boot_loop_state(void);
+
+/**
+ * Record the firmware version (parsed int, e.g. 10102 for v1.1.2) we are
+ * about to install via OTA. Used by the broken-OTA guard: if we later boot
+ * back into a DIFFERENT version, the attempted build failed to confirm (bad
+ * self-test / crash) and is blacklisted so we don't re-install it forever.
+ */
+void health_set_ota_attempt(int ver);
+
+/**
+ * Get the version last attempted via OTA (0 if none).
+ */
+uint32_t health_get_ota_last_attempt(void);
+
+/**
+ * Blacklist a firmware version that failed to confirm, so OTA skips it.
+ */
+void health_set_ota_blacklist(uint32_t ver);
+
+/**
+ * Get the blacklisted OTA version (0 if none).
+ */
+uint32_t health_get_ota_blacklist(void);
+
+/**
+ * Clear OTA attempt + blacklist state. Call on factory reset so a fresh
+ * start does not inherit a stale blacklist.
+ */
+void health_clear_ota_state(void);
 
 /**
  * Register a task for stack monitoring.

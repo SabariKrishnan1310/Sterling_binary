@@ -13,6 +13,7 @@
 #include "esp_system.h"
 #include <string.h>
 #include <sys/param.h>
+#include <inttypes.h>
 
 static const char *TAG = "ota";
 
@@ -161,6 +162,14 @@ esp_err_t ota_check_update(void)
         return ESP_FAIL;
     }
 
+    // Skip blacklisted versions (a build that failed to confirm). This
+    // prevents an endless OTA re-install loop of a broken firmware.
+    if (remote_ver == (int)health_get_ota_blacklist()) {
+        ESP_LOGW(TAG, "Remote version %s is blacklisted (failed previously) — skipping",
+                  version_buf);
+        return ESP_OK;  // treated as up-to-date; do not re-install
+    }
+
     if (remote_ver <= local_ver) {
         ESP_LOGI(TAG, "Firmware is up to date");
         return ESP_OK;
@@ -169,6 +178,7 @@ esp_err_t ota_check_update(void)
     ESP_LOGI(TAG, "New firmware available: %s", version_buf);
 
     update_in_progress = true;
+    health_set_ota_attempt(remote_ver);  // record before install (broken-OTA guard)
     err = perform_ota(OTA_FIRMWARE_URL);
     update_in_progress = false;
 
@@ -195,6 +205,20 @@ esp_err_t ota_init(void)
     esp_err_t err = esp_ota_get_state_partition(running, &ota_state);
     if (err == ESP_OK && ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
         ESP_LOGI(TAG, "Running in PENDING_VERIFY — awaiting self-test confirmation");
+    }
+
+    // ── Broken-OTA guard ──
+    // If we previously attempted to install a version and are now running a
+    // DIFFERENT version, the attempted build failed to confirm (bad self-test
+    // or crash) and the bootloader rolled us back. Blacklist it so we don't
+    // endlessly re-install a broken build.
+    int current_ver = parse_version(FW_VERSION);
+    uint32_t attempted = health_get_ota_last_attempt();
+    if (attempted != 0 && attempted != (uint32_t)current_ver) {
+        ESP_LOGW(TAG, "OTA: attempted v%" PRIu32 " but now running v%d — blacklisting v%" PRIu32,
+                 attempted, current_ver, attempted);
+        health_set_ota_blacklist(attempted);
+        health_set_ota_attempt(0);  // clear marker so we don't re-blacklist
     }
 
     return ESP_OK;

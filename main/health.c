@@ -162,6 +162,46 @@ void health_mark_clean_reboot(void)
     s_rtc.clean_reboot = 1;
 }
 
+// ============================================================
+// BROKEN-OTA GUARD
+// ============================================================
+// If a firmware build is broken (fails self-test or crashes), the bootloader
+// rolls back to the previously-valid firmware. Without a guard, that valid
+// firmware would see the new version in version.txt and re-install the broken
+// build on its next OTA poll — an endless re-install loop that bricks the
+// device's OTA recovery. We record the attempted version in RTC; on the next
+// boot, if we are running a DIFFERENT version than the one attempted, the
+// attempted build failed and is blacklisted.
+
+void health_set_ota_attempt(int ver)
+{
+    s_rtc.magic = RTC_HEALTH_MAGIC;
+    s_rtc.ota_last_attempt_ver = (uint32_t)ver;
+}
+
+uint32_t health_get_ota_last_attempt(void)
+{
+    return s_rtc.ota_last_attempt_ver;
+}
+
+void health_set_ota_blacklist(uint32_t ver)
+{
+    s_rtc.magic = RTC_HEALTH_MAGIC;
+    s_rtc.ota_blacklist_ver = ver;
+}
+
+uint32_t health_get_ota_blacklist(void)
+{
+    return s_rtc.ota_blacklist_ver;
+}
+
+void health_clear_ota_state(void)
+{
+    s_rtc.magic = RTC_HEALTH_MAGIC;
+    s_rtc.ota_last_attempt_ver = 0;
+    s_rtc.ota_blacklist_ver = 0;
+}
+
 // ═══ Shutdown handler ═══
 // Registered with esp_register_shutdown_handler().
 // Called BEFORE every esp_restart(), including crashes and panics.
