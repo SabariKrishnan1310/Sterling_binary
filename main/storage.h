@@ -9,6 +9,11 @@
 // STORAGE FILES
 // =====================================================
 
+// NVS namespace used by storage.c for persistent state.
+// Shared here so other modules (e.g. health self-test) reference the
+// same namespace instead of a hardcoded, mismatched string.
+#define NVS_NAMESPACE             "storage_ns"
+
 #define STORAGE_PENDING_FILE      "/littlefs/pending.bin"
 
 // =====================================================

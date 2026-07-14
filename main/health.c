@@ -241,13 +241,18 @@ static bool run_boot_self_test(void)
         ESP_LOGI(TAG, "  PASS: Free heap: %lu bytes", (unsigned long)free_heap);
     }
 
-    // Test 3: NVS readable (not just initialized — actually openable)
+    // Test 3: NVS readable (not just initialized — actually openable).
+    // Use the app's real namespace (NVS_NAMESPACE == "storage_ns"), opened
+    // READWRITE so a fresh device (where the namespace may not yet exist)
+    // still passes. Opening READONLY on a non-existent namespace returns
+    // ESP_ERR_NVS_NOT_FOUND and would falsely fail the self-test, blocking
+    // OTA confirmation and forcing a rollback to factory.
     {
         nvs_handle_t nvs;
-        esp_err_t nvs_test = nvs_open("storage", NVS_READONLY, &nvs);
+        esp_err_t nvs_test = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
         if (nvs_test != ESP_OK) {
-            ESP_LOGE(TAG, "FAIL: NVS namespace 'storage' not openable: %s",
-                      esp_err_to_name(nvs_test));
+            ESP_LOGE(TAG, "FAIL: NVS namespace '%s' not openable: %s",
+                      NVS_NAMESPACE, esp_err_to_name(nvs_test));
             pass = false;
         } else {
             int32_t seq = 0;

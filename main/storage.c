@@ -15,7 +15,6 @@
 static const char *TAG = "storage";
 static SemaphoreHandle_t s_storage_mutex = NULL;
 
-#define NVS_NAMESPACE       "storage_ns"
 #define NVS_KEY_CURSOR      "upload_csr"
 
 #define CURSOR_NONE         UINT32_MAX
