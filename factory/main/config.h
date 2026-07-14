@@ -42,6 +42,13 @@
 #define OTA_VERSION_URL \
 "https://raw.githubusercontent.com/SabariKrishnan1310/Sterling_binary/main/version.txt"
 
+// WiFi config API (used by wifi_fetch_config in network.c; kept defined so
+// the recovery build compiles even though that helper is currently unused).
+#define WIFI_API_URL "http://api.sabarikrishnan.me/api/v1/wifi"
+
+// STA connect timeout (used by wifi_connect_to_stored_profiles in network.c).
+#define WIFI_CONNECT_TIMEOUT_MS        15000
+
 // ======================================================
 // TX POWER — MAX FOR PCB TRACE ANTENNA
 // ======================================================

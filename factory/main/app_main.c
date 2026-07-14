@@ -9,6 +9,7 @@
 
 #include "config.h"
 #include "softap.h"
+#include "network.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -51,6 +52,12 @@ void app_main(void)
             gpio_set_level(STATUS_LED, 0); vTaskDelay(100 / portTICK_PERIOD_MS);
         }
     }
+
+    // ── Bring up STA and connect to the stored/default WiFi profile ──
+    // This runs ALONGSIDE the SoftAP (APSTA mode) so the bootstrap can reach
+    // the internet and download the main firmware, while the dashboard stays
+    // reachable over the SoftAP.
+    wifi_connect_sta();
 
     ESP_LOGI(TAG, "Bootstrap running. Connect to WiFi '%s' and open http://%s",
              SOFTAP_SSID, SOFTAP_IP_ADDR);

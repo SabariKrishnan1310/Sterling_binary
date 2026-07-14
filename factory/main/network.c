@@ -33,31 +33,31 @@ static void wifi_connect_to_stored_profiles(void);
 static void wifi_store_networks(cJSON *networks);
 
 // WiFi initialization
-void wifi_init(void)
+// ============================================================
+// CONNECT STA  (called AFTER softap_init has brought up APSTA + started WiFi)
+// ============================================================
+// softap_init() has already called esp_netif_init(), created the STA+AP
+// netifs, esp_wifi_init(), set WIFI_MODE_APSTA, and esp_wifi_start(). Calling
+// any of those again here would error, and switching to WIFI_MODE_STA would
+// tear down the SoftAP (which hosts the dashboard). So this function ONLY
+// registers the STA event handlers and connects to the stored/default WiFi
+// profile. That gives the bootstrap internet access so it can download the
+// main firmware from GitHub — while the SoftAP keeps running for the dashboard.
+void wifi_connect_sta(void)
 {
-    ESP_LOGI(TAG, "Initializing WiFi...");
-    
-    esp_netif_init();
-    esp_event_loop_create_default();
-    esp_netif_create_default_wifi_sta();
-    
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-    
-    // Register event handlers
+    ESP_LOGI(TAG, "Bringing up STA to reach the internet...");
+
+    wifi_connect_sem = xSemaphoreCreateBinary();
+
+    // Register STA event handlers (softap_init registers none of these)
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
                         ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, &instance_any_id));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
                         IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, &instance_got_ip));
-    
-    ESP_ERROR_CHECK(esp_wifi_start());
-    
-    wifi_connect_sem = xSemaphoreCreateBinary();
-    
+
+    // Connect to the stored/default WiFi profile (e.g. "JaayM34")
     wifi_connect_to_stored_profiles();
 }
 
@@ -140,8 +140,8 @@ static void wifi_connect_to_stored_profiles(void)
         if (nvs_get_str(nvs, pwd_key, pwd, &pwd_len) != ESP_OK) continue;
         
         wifi_config_t wifi_config = {0};
-        strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
-        strncpy((char*)wifi_config.sta.password, pwd, sizeof(wifi_config.sta.password) - 1);
+        snprintf((char*)wifi_config.sta.ssid, sizeof(wifi_config.sta.ssid), "%s", ssid);
+        snprintf((char*)wifi_config.sta.password, sizeof(wifi_config.sta.password), "%s", pwd);
         wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
         wifi_config.sta.pmf_cfg.capable = true;
         wifi_config.sta.pmf_cfg.required = false;
