@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <sys/time.h>
 #include <time.h>
 #include "esp_timer.h"
@@ -53,6 +54,32 @@ static bool s_wifi_started = false;
 static uint32_t s_consecutive_fails = 0;
 static uint32_t s_total_connects = 0;
 static uint32_t s_total_disconnects = 0;
+
+// Rolling WiFi event log so the dashboard's /api/events card can show WHY
+// connects/disconnects happen (mirrors the factory recovery firmware).
+// The wifi_evt_t type and WIFI_EVT_MAX are declared in network.h.
+static wifi_evt_t s_wifi_evt_log[WIFI_EVT_MAX];
+static uint8_t   s_wifi_evt_head = 0;
+static uint8_t   s_wifi_evt_count = 0;
+
+static void wifi_evt_push(const char *fmt, ...)
+{
+    wifi_evt_t *e = &s_wifi_evt_log[s_wifi_evt_head];
+    e->t_sec = esp_timer_get_time() / 1000000;
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(e->msg, sizeof(e->msg), fmt, args);
+    va_end(args);
+    s_wifi_evt_head = (s_wifi_evt_head + 1) % WIFI_EVT_MAX;
+    if (s_wifi_evt_count < WIFI_EVT_MAX) s_wifi_evt_count++;
+}
+
+const wifi_evt_t *wifi_evt_get_log(uint8_t *count_out)
+{
+    *count_out = s_wifi_evt_count;
+    return s_wifi_evt_log;
+}
+uint8_t wifi_evt_get_head(void) { return s_wifi_evt_head; }
 
 // Backoff state
 static uint32_t s_backoff_ms = WIFI_BACKOFF_BASE_MS;
@@ -380,8 +407,9 @@ static void handle_disconnect_reason(uint8_t reason)
     s_total_disconnects++;
 
     ESP_LOGW(TAG, "Disconnect reason=%d fails=%lu connects=%lu",
-             reason, (unsigned long)s_consecutive_fails, (unsigned long)s_total_connects);
+              reason, (unsigned long)s_consecutive_fails, (unsigned long)s_total_connects);
 
+    wifi_evt_push("Disconnected: reason %d", reason);
     event_log_write(EVT_WIFI_DISCONNECTED);
     led_send(LED_PATTERN_WAVE);
 
@@ -462,6 +490,18 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
         event_log_write(EVT_WIFI_CONNECTED);
         led_send(LED_PATTERN_IDLE);
+
+        int8_t r = 0;
+        uint8_t ch = 0;
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            r = ap.rssi;
+            ch = ap.primary;
+        }
+        char ipbuf[16];
+        snprintf(ipbuf, sizeof(ipbuf), IPSTR, IP2STR(&event->ip_info.ip));
+        wifi_evt_push("Connected: %s (IP %s, %d dBm, ch %d)",
+                      profiles[s_active_profile].ssid, ipbuf, r, ch);
 
         // Spawn config fetch on first connection
         if (!s_time_synced) {

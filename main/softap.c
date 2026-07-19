@@ -748,6 +748,26 @@ static esp_err_t handle_profile_delete(httpd_req_t *req)
     return ESP_OK;
 }
 
+// GET /api/events — rolling WiFi event log (connect/disconnect/reason history)
+// Mirrors the factory recovery firmware so the shared dashboard JS works.
+static esp_err_t handle_events(httpd_req_t *req)
+{
+    uint8_t count = 0;
+    const wifi_evt_t *log = wifi_evt_get_log(&count);
+    uint8_t head = wifi_evt_get_head();
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(root, "events");
+    for (uint8_t i = 0; i < count; i++) {
+        uint8_t idx = (head + WIFI_EVT_MAX - count + i) % WIFI_EVT_MAX;
+        cJSON *obj = cJSON_CreateObject();
+        cJSON_AddNumberToObject(obj, "t", log[idx].t_sec);
+        cJSON_AddStringToObject(obj, "msg", log[idx].msg);
+        cJSON_AddItemToArray(arr, obj);
+    }
+    return send_json(req, root);
+}
+
 static esp_err_t handle_logs(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
@@ -913,6 +933,7 @@ static esp_err_t start_server(void)
     const httpd_uri_t uri_profiles_g  = { .uri = "/api/wifi/profiles",      .method = HTTP_GET,  .handler = handle_profiles_get };
     const httpd_uri_t uri_profile_del = { .uri = "/api/wifi/profiles/<id>", .method = HTTP_DELETE,.handler = handle_profile_delete };
     const httpd_uri_t uri_logs        = { .uri = "/api/logs",               .method = HTTP_GET,  .handler = handle_logs };
+    const httpd_uri_t uri_events       = { .uri = "/api/events",             .method = HTTP_GET,  .handler = handle_events };
     const httpd_uri_t uri_diag        = { .uri = "/api/diagnostics",        .method = HTTP_GET,  .handler = handle_diagnostics };
     const httpd_uri_t uri_cmd         = { .uri = "/api/system/cmd",         .method = HTTP_POST, .handler = handle_system_cmd };
 
@@ -923,6 +944,7 @@ static esp_err_t start_server(void)
     httpd_register_uri_handler(s_server, &uri_profiles_g);
     httpd_register_uri_handler(s_server, &uri_profile_del);
     httpd_register_uri_handler(s_server, &uri_logs);
+    httpd_register_uri_handler(s_server, &uri_events);
     httpd_register_uri_handler(s_server, &uri_diag);
     httpd_register_uri_handler(s_server, &uri_cmd);
 

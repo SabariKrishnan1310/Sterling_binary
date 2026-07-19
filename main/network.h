@@ -31,3 +31,12 @@ void network_set_softap_active(bool active);
 
 // WiFi mutex — lock before any esp_wifi_* sequence that must be atomic
 SemaphoreHandle_t network_get_wifi_mutex(void);
+
+// Rolling WiFi event log (for dashboard /api/events)
+#define WIFI_EVT_MAX 16
+typedef struct {
+    uint32_t t_sec;
+    char     msg[96];
+} wifi_evt_t;
+const wifi_evt_t *wifi_evt_get_log(uint8_t *count_out);
+uint8_t wifi_evt_get_head(void);

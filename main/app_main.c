@@ -191,6 +191,10 @@ void app_main(void)
     health_register_task("health", health_handle,  8192);
 
     // ── Register WDT ──
+    // The health monitor task is the ONE task that feeds the WDT (it calls
+    // esp_task_wdt_reset() every loop). It MUST be subscribed, otherwise its
+    // reset calls fail with "task not found" and the WDT is never fed.
+    register_watchdog(health_handle, "health");
     register_watchdog(rfid_handle, "rfid");
     register_watchdog(upload_handle, "upload");
     register_watchdog(ota_handle, "ota");
