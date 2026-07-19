@@ -663,7 +663,12 @@ esp_err_t network_start_wifi(void)
             sizeof(wifi_config.sta.password) - 1);
     wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;  // best guess, scan verifies
+    // Use WIFI_AUTH_OPEN as the threshold — this is the most permissive
+    // setting and lets the chip negotiate the actual authmode (OPEN/WPA/WPA2/
+    // WPA3) during the handshake. A stricter threshold (e.g. WPA2_PSK) silently
+    // rejects OPEN/WPA networks. The real authmode is verified by the scan in
+    // switch_to_profile(); this threshold only gates which APs we'll attempt.
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
     wifi_config.sta.failure_retry_cnt = 3;
 
     // Apply max TX power BEFORE esp_wifi_start

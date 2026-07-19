@@ -4,6 +4,7 @@
 #include "esp_netif.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#include "esp_crt_bundle.h"
 #include "cJSON.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
@@ -17,6 +18,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <string.h>
+#include <stdarg.h>
 #include <sys/time.h>
 
 static const char *TAG = "FACTORY_NETWORK";
@@ -25,6 +27,40 @@ static const char *TAG = "FACTORY_NETWORK";
 
 static bool wifi_connected = false;
 static SemaphoreHandle_t wifi_connect_sem = NULL;
+static uint32_t sta_retry_count = 0;
+static char wifi_cur_ssid[64] = {0};
+
+// Rolling event log so the dashboard can show WHY connects/disconnects happen.
+#define WIFI_EVT_MAX 16
+typedef struct {
+    uint32_t t_sec;      // uptime seconds when it happened
+    char     msg[96];    // human-readable text
+} wifi_evt_t;
+static wifi_evt_t wifi_evt_log[WIFI_EVT_MAX];
+static uint8_t   wifi_evt_head = 0;
+static uint8_t   wifi_evt_count = 0;
+
+static void wifi_evt_push(const char *fmt, ...)
+{
+    wifi_evt_t *e = &wifi_evt_log[wifi_evt_head];
+    e->t_sec = esp_timer_get_time() / 1000000;
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(e->msg, sizeof(e->msg), fmt, args);
+    va_end(args);
+    wifi_evt_head = (wifi_evt_head + 1) % WIFI_EVT_MAX;
+    if (wifi_evt_count < WIFI_EVT_MAX) wifi_evt_count++;
+}
+
+// Expose the event log to the web server (softap.c)
+const wifi_evt_t *wifi_evt_get_log(uint8_t *count_out)
+{
+    *count_out = wifi_evt_count;
+    return wifi_evt_log;
+}
+uint8_t wifi_evt_get_head(void) { return wifi_evt_head; }
+
+const char *wifi_get_cur_ssid(void) { return wifi_cur_ssid; }
 
 // Forward declarations
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
@@ -69,12 +105,37 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         wifi_connected = true;
+        sta_retry_count = 0;
+        int8_t r = 0;
+        uint8_t ch = 0;
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            r = ap.rssi;
+            ch = ap.primary;
+        }
+        char ipbuf[16];
+        snprintf(ipbuf, sizeof(ipbuf), IPSTR, IP2STR(&event->ip_info.ip));
+        wifi_evt_push("Connected: %s (IP %s, %d dBm, ch %d)",
+                      wifi_cur_ssid, ipbuf, r, ch);
         if (wifi_connect_sem) {
             xSemaphoreGive(wifi_connect_sem);
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGW(TAG, "WiFi disconnected");
+        wifi_event_sta_disconnected_t *disc = (wifi_event_sta_disconnected_t *) event_data;
+        int reason = disc ? disc->reason : -1;
+        int rssi = disc ? disc->rssi : 0;
+        ESP_LOGW(TAG, "WiFi disconnected (reason=%d, rssi=%d)", reason, rssi);
         wifi_connected = false;
+        wifi_evt_push("Disconnected: reason %d (rssi %d)", reason, rssi);
+        /* Retry the CURRENT profile config (the one we were using), not the
+           whole stored-profile loop. Re-running the full loop on every
+           disconnect causes profile thrashing + false "Failed to connect"
+           messages + APSTA channel churn. A simple reconnect with backoff
+           is what the WiFi driver expects here. */
+        uint32_t delay_ms = (sta_retry_count < 5) ? 500 : 5000;
+        sta_retry_count++;
+        ESP_LOGI(TAG, "Reconnecting in %" PRIu32 " ms (attempt %" PRIu32 ")", delay_ms, sta_retry_count);
+        vTaskDelay(delay_ms / portTICK_PERIOD_MS);
         esp_wifi_connect();
     }
 }
@@ -102,7 +163,10 @@ static void seed_default_profiles(void)
 static void wifi_connect_to_stored_profiles(void)
 {
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &nvs);
+    /* Open READWRITE so the namespace is created on a fresh device.
+       A READONLY open returns ESP_ERR_NVS_NOT_FOUND when the namespace
+       does not yet exist, which would abort before seeding defaults. */
+    esp_err_t err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
         return;
@@ -115,7 +179,7 @@ static void wifi_connect_to_stored_profiles(void)
         nvs_close(nvs);
         seed_default_profiles();
         // Retry after seeding
-        err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &nvs);
+        err = nvs_open(WIFI_NVS_NAMESPACE, NVS_READWRITE, &nvs);
         if (err != ESP_OK) return;
         if (nvs_get_u16(nvs, "count", &profile_count) != ESP_OK || profile_count == 0) {
             nvs_close(nvs);
@@ -142,10 +206,15 @@ static void wifi_connect_to_stored_profiles(void)
         wifi_config_t wifi_config = {0};
         snprintf((char*)wifi_config.sta.ssid, sizeof(wifi_config.sta.ssid), "%s", ssid);
         snprintf((char*)wifi_config.sta.password, sizeof(wifi_config.sta.password), "%s", pwd);
-        wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
-        wifi_config.sta.pmf_cfg.capable = true;
+        /* Accept ANY authmode (open, WPA, WPA2, WPA3). Setting this to
+           WPA2_PSK would silently reject open/WPA1 networks. */
+        wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+        /* Disable PMF capability — some APs/phone hotspots reject or drop
+           PMF-capable clients, causing connect failures / disassoc loops. */
+        wifi_config.sta.pmf_cfg.capable = false;
         wifi_config.sta.pmf_cfg.required = false;
-        
+
+        snprintf(wifi_cur_ssid, sizeof(wifi_cur_ssid), "%s", ssid);
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
         ESP_ERROR_CHECK(esp_wifi_connect());
         
@@ -163,6 +232,60 @@ static void wifi_connect_to_stored_profiles(void)
     ESP_LOGE(TAG, "Failed to connect to any WiFi profile");
 }
 
+void wifi_reconnect(void)
+{
+    ESP_LOGI(TAG, "Reconnect requested — retrying current WiFi profile");
+    /* Retry the CURRENTLY configured profile (the one already set via
+       wifi_config), NOT the whole stored-profile loop. Re-running the loop
+       here would re-evaluate every profile and can hop to a different AP on a
+       different channel, forcing an APSTA channel switch that bounces the
+       SoftAP dashboard client. A plain reconnect keeps us on the same AP. */
+    esp_wifi_disconnect();
+    vTaskDelay(200 / portTICK_PERIOD_MS);
+    esp_wifi_connect();
+}
+
+// Connect to a SPECIFIC stored profile by index (used when the dashboard adds
+// a new profile and wants to join it immediately without a full re-scan loop).
+void wifi_connect_profile(uint16_t index)
+{
+    nvs_handle_t nvs;
+    if (nvs_open(WIFI_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        ESP_LOGE(TAG, "Cannot open NVS to connect profile %d", index);
+        return;
+    }
+
+    char ssid_key[32], pwd_key[32];
+    snprintf(ssid_key, sizeof(ssid_key), "ssid_%d", index);
+    snprintf(pwd_key, sizeof(pwd_key), "pwd_%d", index);
+
+    char ssid[64] = {0};
+    char pwd[64] = {0};
+    size_t ssid_len = sizeof(ssid);
+    size_t pwd_len = sizeof(pwd);
+
+    if (nvs_get_str(nvs, ssid_key, ssid, &ssid_len) != ESP_OK) {
+        nvs_close(nvs);
+        return;
+    }
+    nvs_get_str(nvs, pwd_key, pwd, &pwd_len);
+    nvs_close(nvs);
+
+    wifi_config_t wifi_config = {0};
+    snprintf((char*)wifi_config.sta.ssid, sizeof(wifi_config.sta.ssid), "%s", ssid);
+    snprintf((char*)wifi_config.sta.password, sizeof(wifi_config.sta.password), "%s", pwd);
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    wifi_config.sta.pmf_cfg.capable = false;
+    wifi_config.sta.pmf_cfg.required = false;
+
+    snprintf(wifi_cur_ssid, sizeof(wifi_cur_ssid), "%s", ssid);
+    ESP_LOGI(TAG, "Connecting to profile %d: %s", index, ssid);
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    esp_wifi_disconnect();
+    vTaskDelay(200 / portTICK_PERIOD_MS);
+    esp_wifi_connect();
+}
+
 bool wifi_is_connected(void)
 {
     return wifi_connected;
@@ -178,6 +301,7 @@ esp_err_t wifi_fetch_config(void)
         .method = HTTP_METHOD_GET,
         .timeout_ms = HTTP_TIMEOUT_MS,
         .skip_cert_common_name_check = true,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -284,6 +408,7 @@ esp_err_t ota_force_update(void)
         .timeout_ms = 30000,
         .keep_alive_enable = false,
         .skip_cert_common_name_check = true,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);

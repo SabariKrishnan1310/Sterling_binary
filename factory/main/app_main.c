@@ -35,11 +35,24 @@ void app_main(void)
     }
 
     // ── NVS init ──
+    // On a fresh device (or after NVS erase) nvs_flash_init() returns
+    // ESP_ERR_NVS_NOT_FOUND — the partition exists but is unformatted.
+    // If we don't erase+reinit here, every later nvs_open() fails and the
+    // STA can never connect, so the recovery can't reach GitHub to install
+    // the main firmware. Handle NOT_FOUND exactly like the other corrupt
+    // states (matches main/app_main.c).
     esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS: erasing and reinitializing");
+    if (err == ESP_ERR_NVS_NOT_FOUND ||
+        err == ESP_ERR_NVS_NO_FREE_PAGES ||
+        err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS: erasing and reinitializing (was %s)",
+                  esp_err_to_name(err));
         nvs_flash_erase();
-        nvs_flash_init();
+        err = nvs_flash_init();
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS init FAILED: %s — STA WiFi will be unavailable",
+                  esp_err_to_name(err));
     }
 
     // ── Start SoftAP + HTTP server ──

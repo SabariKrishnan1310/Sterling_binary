@@ -33,6 +33,15 @@ CONFIG_MBEDTLS_HARDWARE_SHA=y
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 
+# ESP-TLS / mbedTLS: enable the built-in CA certificate bundle so HTTPS OTA
+# to GitHub (raw.githubusercontent.com) validates the server cert. Without
+# this, esp_crt_bundle_attach is compiled out and OTA fails with
+# ESP_ERR_MBEDTLS_SSL_SETUP_FAILED ("use_crt_bundle configured but not
+# enabled in menuconfig: Please enable MBEDTLS_CERTIFICATE_BUNDLE option").
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_MAX_CERTS=200
+
 CONFIG_OTA_ALLOW_HTTP=n
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=n

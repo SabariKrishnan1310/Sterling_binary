@@ -1,9 +1,11 @@
 #include "softap.h"
 #include "config.h"
+#include "network.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_http_client.h"
 #include "esp_http_server.h"
+#include "esp_crt_bundle.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_chip_info.h"
@@ -105,6 +107,13 @@ static const char DASHBOARD_HTML[] =
 "<h2>Saved Profiles</h2>"
 "<button onclick='listProfiles()'>Refresh</button>"
 "<div id='profiles'><pre>Loading...</pre></div>"
+"<p id='connstatus'></p>"
+"</div>"
+
+"<div class='card'>"
+"<h2>WiFi Event Log</h2>"
+"<p style='font-size:12px;color:#666;margin:0 0 8px'>Live connect/disconnect events with reasons</p>"
+"<div id='eventlog'><pre>Loading...</pre></div>"
 "</div>"
 
 "<div class='card'>"
@@ -133,14 +142,21 @@ static const char DASHBOARD_HTML[] =
 
 "<script>"
 "function h(tag,cls,txt){var e=document.createElement(tag);if(cls)e.className=cls;if(txt)e.textContent=txt;return e}"
+"function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}"
+"function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}"
+"function selectNetwork(btn){document.getElementById('ssid').value=btn.getAttribute('data-ssid');document.getElementById('pwd').focus()}"
 
 // Status auto-refresh
 "function refreshStatus(){"
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
+"var conn=d.wifi_connected;"
 "var h='';"
-"h+='<div class=stat><div class=stat-label>WiFi</div><div class=stat-value '+(d.wifi==='CONNECTED'?'ok':'crit')+'>'+d.wifi+'</div></div>';"
-"h+='<div class=stat><div class=stat-label>IP</div><div class=stat-value>'+(d.ip||'--')+'</div></div>';"
-"h+='<div class=stat><div class=stat-label>RSSI</div><div class=stat-value '+(d.rssi<-75?'warn':d.rssi<-50?'':'ok')+'>'+d.rssi+' dBm</div></div>';"
+"h+='<div class=stat><div class=stat-label>STA Link</div><div class=stat-value '+(conn?'ok':'crit')+'>'+(conn?'CONNECTED':'DISCONNECTED')+'</div></div>';"
+"h+='<div class=stat><div class=stat-label>Network</div><div class=stat-value>'+(d.sta_ssid||'--')+'</div></div>';"
+"h+='<div class=stat><div class=stat-label>STA IP</div><div class=stat-value>'+(d.sta_ip||'--')+'</div></div>';"
+"h+='<div class=stat><div class=stat-label>Channel</div><div class=stat-value>'+(d.channel||'--')+'</div></div>';"
+"h+='<div class=stat><div class=stat-label>RSSI</div><div class=stat-value '+(d.rssi<-75?'warn':d.rssi<-50?'':'ok')+'>'+(d.rssi?d.rssi+' dBm':'--')+'</div></div>';"
+"h+='<div class=stat><div class=stat-label>AP IP</div><div class=stat-value>'+(d.ip||'--')+'</div></div>';"
 "h+='<div class=stat><div class=stat-label>Memory</div><div class=stat-value'+(d.free_heap<10000?' crit':'')+'>'+(d.free_heap/1024).toFixed(1)+' KB</div></div>';"
 "h+='<div class=stat><div class=stat-label>Uptime</div><div class=stat-value>'+d.uptime+'</div></div>';"
 "h+='<div class=stat><div class=stat-label>FW</div><div class=stat-value>'+d.version+'</div></div>';"
@@ -149,20 +165,52 @@ static const char DASHBOARD_HTML[] =
 "setInterval(refreshStatus,3000);"
 "refreshStatus();"
 
+// Decode WiFi disconnect reason codes to human text
+"function reasonText(r){"
+"var m={1:'auth expired',2:'auth not valid / wrong password',3:'deauth leaving (AP kicked STA)',4:'disassoc due to inactivity',5:'AP busy',6:'class2 frame from non-auth',7:'class3 frame from non-assoc',8:'STA leaving / deauth',15:'4-way handshake timeout',201:'STA found no AP (scan failed)',205:'STA disconnected (no AP in range)'};"
+"return m[r]?m[r]:('code '+r);"
+"}"
+
+// Live WiFi event log
+"function refreshEvents(){"
+"fetch('/api/events').then(r=>r.json()).then(d=>{"
+"if(!d.events||d.events.length===0){document.getElementById('eventlog').innerHTML='<pre>No events yet</pre>';return}"
+"var h='';"
+"d.events.forEach(function(e){"
+"var cls=e.msg.indexOf('Connected')===0?'ok':e.msg.indexOf('Disconnected')===0?'crit':'';"
+"var color=cls==='ok'?'#4caf50':cls==='crit'?'#f44336':'#333';"
+"var txt=e.msg;"
+"var ri=txt.indexOf('reason ');"
+"if(ri>=0){var num=parseInt(txt.substring(ri+7));txt=txt.substring(0,ri)+'reason '+num+' ('+reasonText(num)+')';}"
+"h+='<div style=\"padding:4px 0;border-bottom:1px solid #eee;font-size:12px\"><span style=color:#999>['+fmtTime(e.t)+']</span> <span style=color:'+color+'>'+escHtml(txt)+'</span></div>';"
+"});"
+"document.getElementById('eventlog').innerHTML=h;"
+"}).catch(e=>{})}"
+"function fmtTime(s){var hh=Math.floor(s/3600),mm=Math.floor((s%3600)/60),ss=s%60;return (hh<10?'0':'')+hh+':'+(mm<10?'0':'')+mm+':'+(ss<10?'0':'')+ss;}"
+"setInterval(refreshEvents,2000);"
+"refreshEvents();"
+
 // WiFi scan
 "function scanWifi(){"
-"document.getElementById('scanBtn').disabled=true;document.getElementById('scanBtn').textContent='Scanning...';"
-"fetch('/api/wifi/scan').then(r=>r.json()).then(d=>{"
-"document.getElementById('scanBtn').disabled=false;document.getElementById('scanBtn').textContent='Scan Networks';"
-"if(d.error){document.getElementById('scanresults').innerHTML='<pre>Error: '+d.error+'</pre>';return}"
+"document.getElementById('scanBtn').disabled=true;"
+"document.getElementById('scanBtn').textContent='Scanning...';"
+"fetch('/api/wifi/scan').then(function(r){return r.json()}).then(function(d){"
+"document.getElementById('scanBtn').disabled=false;"
+"document.getElementById('scanBtn').textContent='Scan Networks';"
+"if(d.error){document.getElementById('scanresults').innerHTML='<pre>Error: '+d.error+'</pre>';return;}"
 "var h='<table><tr><th>Network</th><th>Signal</th><th>Security</th><th></th></tr>';"
 "d.networks.forEach(function(n){"
 "var bars=n.rssi>-50?4:n.rssi>-60?3:n.rssi>-70?2:1;"
 "var color=bars>=3?'#4caf50':bars>=2?'#ff9800':'#f44336';"
-"h+='<tr><td>'+n.ssid+'</td><td>'+n.rssi+' dBm <span class=rssi-bar style=background:'+color+';height:'+(bars*4+4)+'px></span></td>'"
-"+'<td>'+n.auth+'</td><td><button onclick=\"document.getElementById(\\'ssid\\').value=\\''+n.ssid.replace(/'/g,\"\\\\'\")+'\\'\">Select</button></td></tr>';"
-"});h+='</table>';document.getElementById('scanresults').innerHTML=h;"
-"}).catch(e=>{document.getElementById('scanBtn').disabled=false;document.getElementById('scanBtn').textContent='Scan Networks'})}"
+"h+='<tr><td>'+escHtml(n.ssid)+'</td><td>'+n.rssi+' dBm <span class=rssi-bar style=background:'+color+';height:'+(bars*4+4)+'px></span></td>'"
+"+'<td>'+n.auth+'</td><td><button onclick=\"selectNetwork(this)\" data-ssid=\"'+escAttr(n.ssid)+'\">Select</button></td></tr>';"
+"});"
+"h+='</table>';"
+"document.getElementById('scanresults').innerHTML=h;"
+"}).catch(function(e){"
+"document.getElementById('scanBtn').disabled=false;"
+"document.getElementById('scanBtn').textContent='Scan Networks';"
+"});"
 "}"
 
 // Add WiFi
@@ -174,11 +222,25 @@ static const char DASHBOARD_HTML[] =
 "body:JSON.stringify({ssid:ssid,password:pwd})})"
 ".then(r=>r.json()).then(d=>{"
 "if(d.error){document.getElementById('addresult').innerHTML='<span style=color:#f44336>'+d.error+'</span>';return}"
-"document.getElementById('addresult').innerHTML='<span style=color:#4caf50>Added! Total: '+d.count+' profiles</span>';"
+"document.getElementById('addresult').innerHTML='<span style=color:#4caf50>Added! Total: '+d.count+' profiles — connecting...</span>';"
 "document.getElementById('ssid').value='';document.getElementById('pwd').value='';"
 "listProfiles();"
+"setTimeout(refreshConn,4000);"
 "}).catch(e=>{document.getElementById('addresult').innerHTML='<span style=color:#f44336>Failed</span>'})"
 "}"
+
+// Connect to stored profiles now
+"function connectWifi(){"
+"fetch('/api/wifi/connect',{method:'POST'}).then(r=>r.json()).then(d=>{"
+"document.getElementById('connstatus').innerHTML='<span style=color:#2196f3>Connecting...</span>';"
+"setTimeout(refreshConn,4000);"
+"}).catch(e=>{})}"
+"function refreshConn(){"
+"fetch('/api/status').then(r=>r.json()).then(d=>{"
+"var s=d.wifi_connected?'<span style=color:#4caf50>Connected: '+(d.sta_ip||'')+'</span>':'<span style=color:#f44336>Not connected</span>';"
+"document.getElementById('connstatus').innerHTML=s;"
+"}).catch(e=>{})}"
+"setInterval(refreshConn,8000);"
 
 // List profiles
 "function listProfiles(){"
@@ -186,13 +248,13 @@ static const char DASHBOARD_HTML[] =
 "if(d.profiles.length===0){document.getElementById('profiles').innerHTML='<pre>No profiles saved</pre>';return}"
 "var h='<table><tr><th>#</th><th>SSID</th><th></th></tr>';"
 "d.profiles.forEach(function(p,i){"
-"h+='<tr><td>'+i+'</td><td>'+p.ssid+'</td><td><button class=danger onclick=\"delProfile('+i+')\">Remove</button></td></tr>';"
+"h+='<tr><td>'+i+'</td><td>'+p.ssid+'</td><td><button onclick=\"connectWifi()\">Connect</button> <button class=danger onclick=\"delProfile('+i+')\">Remove</button></td></tr>';"
 "});h+='</table>';document.getElementById('profiles').innerHTML=h;"
 "}).catch(e=>{})}"
 
 // Delete profile
 "function delProfile(i){"
-"fetch('/api/wifi/profiles/'+i,{method:'DELETE'})"
+"fetch('/api/wifi/profiles?id='+i,{method:'DELETE'})"
 ".then(r=>r.json()).then(()=>listProfiles())"
 "}"
 
@@ -223,7 +285,6 @@ static const char DASHBOARD_HTML[] =
 "document.getElementById('otaButtons').style.display='block';"
 "pollOtaProgress();"
 "}).catch(e=>showOtaError('Failed to start OTA'))}"
-"}"
 
 "function pollOtaProgress(){"
 "var iv=setInterval(function(){"
@@ -299,8 +360,29 @@ static esp_err_t handle_status(httpd_req_t *req)
     // IP — always 192.168.4.1 for SoftAP
     cJSON_AddStringToObject(root, "ip", SOFTAP_IP_ADDR);
 
-    // RSSI — not applicable in AP mode
-    cJSON_AddNumberToObject(root, "rssi", 0);
+    // RSSI — report the STA's connected signal strength when linked
+    int8_t sta_rssi = 0;
+    uint8_t sta_chan = 0;
+    char sta_ssid[64] = {0};
+    char sta_ip[16] = {0};
+    if (wifi_is_connected()) {
+        wifi_ap_record_t ap_rec;
+        if (esp_wifi_sta_get_ap_info(&ap_rec) == ESP_OK) {
+            sta_rssi = ap_rec.rssi;
+            sta_chan = ap_rec.primary;
+        }
+        snprintf(sta_ssid, sizeof(sta_ssid), "%s", wifi_get_cur_ssid());
+        esp_netif_ip_info_t ip_info;
+        esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (sta_netif && esp_netif_get_ip_info(sta_netif, &ip_info) == ESP_OK) {
+            snprintf(sta_ip, sizeof(sta_ip), IPSTR, IP2STR(&ip_info.ip));
+        }
+    }
+    cJSON_AddNumberToObject(root, "wifi_connected", wifi_is_connected() ? 1 : 0);
+    cJSON_AddStringToObject(root, "sta_ssid", sta_ssid);
+    cJSON_AddStringToObject(root, "sta_ip", sta_ip);
+    cJSON_AddNumberToObject(root, "rssi", sta_rssi);
+    cJSON_AddNumberToObject(root, "channel", sta_chan);
 
     // Memory
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
@@ -315,6 +397,31 @@ static esp_err_t handle_status(httpd_req_t *req)
     // Version
     cJSON_AddStringToObject(root, "version", BOOTSTRAP_VERSION);
 
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_send(req, json, strlen(json));
+    free(json);
+    return err;
+}
+
+// GET /api/events — rolling WiFi event log (connect/disconnect/reason history)
+static esp_err_t handle_events(httpd_req_t *req)
+{
+    uint8_t count = 0;
+    const wifi_evt_t *log = wifi_evt_get_log(&count);
+    uint8_t head = wifi_evt_get_head();
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(root, "events");
+    /* Walk oldest→newest: start at (head - count + WIFI_EVT_MAX) % WIFI_EVT_MAX */
+    for (uint8_t i = 0; i < count; i++) {
+        uint8_t idx = (head + WIFI_EVT_MAX - count + i) % WIFI_EVT_MAX;
+        cJSON *obj = cJSON_CreateObject();
+        cJSON_AddNumberToObject(obj, "t", log[idx].t_sec);
+        cJSON_AddStringToObject(obj, "msg", log[idx].msg);
+        cJSON_AddItemToArray(arr, obj);
+    }
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
@@ -478,6 +585,9 @@ static esp_err_t handle_profiles_post(httpd_req_t *req)
 
     ESP_LOGI(TAG, "Added profile: %s (total: %d)", ssid_item->valuestring, count);
 
+    /* Try to join the newly added network right away (index = count-1). */
+    wifi_connect_profile((uint16_t)(count - 1));
+
     cJSON *resp = cJSON_CreateObject();
     cJSON_AddStringToObject(resp, "status", "ok");
     cJSON_AddNumberToObject(resp, "count", count);
@@ -491,19 +601,30 @@ static esp_err_t handle_profiles_post(httpd_req_t *req)
     return ESP_OK;
 }
 
-// DELETE /api/wifi/profiles/<id>
+// POST /api/wifi/connect — (re)try connecting to stored WiFi profiles now
+static esp_err_t handle_wifi_connect(httpd_req_t *req)
+{
+    wifi_reconnect();
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "status", "connecting");
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    free(json);
+    return ESP_OK;
+}
+
+// DELETE /api/wifi/profiles?id=<index>
 static esp_err_t handle_profile_delete(httpd_req_t *req)
 {
-    // Extract 'id' from URI: /api/wifi/profiles/0
+    // Parse the 'id' query parameter: /api/wifi/profiles?id=0
     char id_str[16] = {0};
-    // The URI is /api/wifi/profiles/<id> — get the last segment
-    const char *uri = req->uri;
-    const char *last_slash = strrchr(uri, '/');
-    if (!last_slash || !*(last_slash + 1)) {
+    const char *q = strchr(req->uri, '?');
+    if (!q || sscanf(q, "?id=%15s", id_str) != 1) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing id");
         return ESP_FAIL;
     }
-    strncpy(id_str, last_slash + 1, sizeof(id_str) - 1);
     int idx = atoi(id_str);
 
     nvs_handle_t nvs;
@@ -575,6 +696,8 @@ static void ota_task(void *pvParameters)
         .url = OTA_FIRMWARE_URL,
         .timeout_ms = 30000,
         .keep_alive_enable = false,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .skip_cert_common_name_check = true,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -590,7 +713,10 @@ static void ota_task(void *pvParameters)
         ESP_LOGE(TAG, "OTA: HTTP open failed: %s", esp_err_to_name(err));
         s_ota_status = err;
         s_ota_in_progress = false;
-        esp_http_client_cleanup(client);
+        // Guard the cleanup: a failed TLS/open can leave the handle in a
+        // state where cleanup dereferences NULL and panics the chip.
+        if (client) esp_http_client_cleanup(client);
+        client = NULL;
         return;
     }
 
@@ -600,7 +726,7 @@ static void ota_task(void *pvParameters)
         ESP_LOGE(TAG, "OTA: HTTP status %d", status);
         s_ota_status = ESP_FAIL;
         s_ota_in_progress = false;
-        esp_http_client_cleanup(client);
+        if (client) esp_http_client_cleanup(client);
         return;
     }
 
@@ -613,7 +739,7 @@ static void ota_task(void *pvParameters)
         ESP_LOGE(TAG, "OTA: No update partition found");
         s_ota_status = ESP_FAIL;
         s_ota_in_progress = false;
-        esp_http_client_cleanup(client);
+        if (client) esp_http_client_cleanup(client);
         return;
     }
     ESP_LOGI(TAG, "OTA: Writing to partition '%s' at offset 0x%" PRIx32,
@@ -625,7 +751,7 @@ static void ota_task(void *pvParameters)
         ESP_LOGE(TAG, "OTA: esp_ota_begin failed: %s", esp_err_to_name(err));
         s_ota_status = err;
         s_ota_in_progress = false;
-        esp_http_client_cleanup(client);
+        if (client) esp_http_client_cleanup(client);
         return;
     }
 
@@ -640,14 +766,14 @@ static void ota_task(void *pvParameters)
             esp_ota_abort(ota_handle);
             s_ota_status = err;
             s_ota_in_progress = false;
-            esp_http_client_cleanup(client);
+            if (client) esp_http_client_cleanup(client);
             return;
         }
 
         s_ota_bytes_downloaded += r;
     }
 
-    esp_http_client_cleanup(client);
+    if (client) esp_http_client_cleanup(client);
 
     if (s_ota_abort) {
         ESP_LOGW(TAG, "OTA: Aborted by user");
@@ -696,7 +822,7 @@ static esp_err_t handle_ota_start(httpd_req_t *req)
     }
 
     // Start OTA in background task
-    BaseType_t ret = xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, NULL);
+    BaseType_t ret = xTaskCreate(ota_task, "ota_task", 16384, NULL, 5, NULL);
     if (ret != pdPASS) {
         cJSON *resp = cJSON_CreateObject();
         cJSON_AddStringToObject(resp, "error", "Failed to create OTA task");
@@ -823,10 +949,12 @@ static esp_err_t start_server(void)
     // URI handlers
     const httpd_uri_t uri_dashboard  = { .uri = "/",                        .method = HTTP_GET,  .handler = handle_dashboard };
     const httpd_uri_t uri_status     = { .uri = "/api/status",              .method = HTTP_GET,  .handler = handle_status };
+    const httpd_uri_t uri_events     = { .uri = "/api/events",              .method = HTTP_GET,  .handler = handle_events };
     const httpd_uri_t uri_scan       = { .uri = "/api/wifi/scan",           .method = HTTP_GET,  .handler = handle_wifi_scan };
     const httpd_uri_t uri_profiles_g = { .uri = "/api/wifi/profiles",       .method = HTTP_GET,  .handler = handle_profiles_get };
     const httpd_uri_t uri_profiles_p = { .uri = "/api/wifi/profiles",       .method = HTTP_POST, .handler = handle_profiles_post };
-    const httpd_uri_t uri_profile_del= { .uri = "/api/wifi/profiles/<id>",  .method = HTTP_DELETE,.handler = handle_profile_delete };
+    const httpd_uri_t uri_wifi_conn  = { .uri = "/api/wifi/connect",        .method = HTTP_POST, .handler = handle_wifi_connect };
+    const httpd_uri_t uri_profile_del= { .uri = "/api/wifi/profiles",  .method = HTTP_DELETE,.handler = handle_profile_delete };
     const httpd_uri_t uri_ota_start  = { .uri = "/api/system/ota",          .method = HTTP_POST, .handler = handle_ota_start };
     const httpd_uri_t uri_ota_prog   = { .uri = "/api/ota/progress",        .method = HTTP_GET,  .handler = handle_ota_progress };
     const httpd_uri_t uri_ota_abort  = { .uri = "/api/system/abort_ota",    .method = HTTP_POST, .handler = handle_ota_abort };
@@ -834,9 +962,11 @@ static esp_err_t start_server(void)
 
     httpd_register_uri_handler(s_server, &uri_dashboard);
     httpd_register_uri_handler(s_server, &uri_status);
+    httpd_register_uri_handler(s_server, &uri_events);
     httpd_register_uri_handler(s_server, &uri_scan);
     httpd_register_uri_handler(s_server, &uri_profiles_g);
     httpd_register_uri_handler(s_server, &uri_profiles_p);
+    httpd_register_uri_handler(s_server, &uri_wifi_conn);
     httpd_register_uri_handler(s_server, &uri_profile_del);
     httpd_register_uri_handler(s_server, &uri_ota_start);
     httpd_register_uri_handler(s_server, &uri_ota_prog);
