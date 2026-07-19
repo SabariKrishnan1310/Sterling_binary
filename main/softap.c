@@ -211,7 +211,7 @@ static const char DASHBOARD_HTML[] =
 "var h='<table><tr><th>#</th><th>SSID</th><th></th></tr>';"
 "d.profiles.forEach(function(p,i){"
 "h+='<tr><td>'+i+'</td><td>'+p.ssid+'</td><td>"
-"+'<button class=danger onclick=\"delProfile('+i+')\">Remove</button></td></tr>';"
+"<button class=danger onclick=\"delProfile('+i+')\">Remove</button></td></tr>';"
 "});h+='</table>';document.getElementById('profiles').innerHTML=h;"
 "}).catch(function(){})}"
 
