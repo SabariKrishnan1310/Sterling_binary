@@ -215,9 +215,22 @@ static void wifi_connect_to_stored_profiles(void)
         wifi_config.sta.pmf_cfg.required = false;
 
         snprintf(wifi_cur_ssid, sizeof(wifi_cur_ssid), "%s", ssid);
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-        ESP_ERROR_CHECK(esp_wifi_connect());
-        
+        /* Do NOT ESP_ERROR_CHECK() here. A failed set_config/connect (e.g. AP
+           rejects the authmode, or STA is mid-transition) must NOT abort() the
+           recovery firmware — that would reboot it and could loop. Log and let
+           the disconnect handler retry instead. */
+        esp_err_t c_err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+        if (c_err != ESP_OK) {
+            ESP_LOGW(TAG, "set_config(%s) failed: %s — skipping", ssid, esp_err_to_name(c_err));
+            esp_wifi_disconnect();
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            continue;
+        }
+        c_err = esp_wifi_connect();
+        if (c_err != ESP_OK) {
+            ESP_LOGW(TAG, "connect(%s) failed: %s — will retry on disconnect", ssid, esp_err_to_name(c_err));
+        }
+
         if (xSemaphoreTake(wifi_connect_sem, WIFI_CONNECT_TIMEOUT_MS / portTICK_PERIOD_MS)) {
             ESP_LOGI(TAG, "Connected: %s", ssid);
             nvs_close(nvs);
