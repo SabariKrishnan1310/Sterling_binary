@@ -56,13 +56,28 @@ void app_main(void)
     }
 
     // ── Start SoftAP + HTTP server ──
+    // The SoftAP + dashboard is the ONLY recovery surface on this partition.
+    // If it fails to come up we must NOT freeze forever (a frozen device is a
+    // brick). Instead we retry a bounded number of times, then restart the chip
+    // — the bootloader returns here (factory is permanent), so a restart just
+    // retries cleanly. If the radio is truly wedged, a power cycle clears it.
     ESP_LOGI(TAG, "Starting Sterling Bootstrap v%s", BOOTSTRAP_VERSION);
-    err = softap_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "SoftAP init failed: %s — SOS blink forever", esp_err_to_name(err));
-        while (1) {
+    #define SOFTAP_INIT_RETRIES 3
+    int sap_tries = 0;
+    while ((err = softap_init()) != ESP_OK) {
+        sap_tries++;
+        ESP_LOGE(TAG, "SoftAP init failed (try %d/%d): %s",
+                  sap_tries, SOFTAP_INIT_RETRIES, esp_err_to_name(err));
+        // SOS blink while we wait before retrying
+        for (int i = 0; i < 5; i++) {
             gpio_set_level(STATUS_LED, 1); vTaskDelay(100 / portTICK_PERIOD_MS);
             gpio_set_level(STATUS_LED, 0); vTaskDelay(100 / portTICK_PERIOD_MS);
+        }
+        if (sap_tries >= SOFTAP_INIT_RETRIES) {
+            ESP_LOGE(TAG, "SoftAP init failed %d times — restarting chip (returns to factory)",
+                      sap_tries);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
         }
     }
 

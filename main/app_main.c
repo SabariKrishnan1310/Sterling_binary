@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_chip_info.h"
 #include "nvs_flash.h"
 #include "esp_task_wdt.h"
@@ -107,6 +108,39 @@ void app_main(void)
     // up so the user can connect WiFi and the OTA task pulls a known-good
     // firmware from the server (the recovery path). Without OTA, safe mode
     // would be a dead end with no way to recover over the air.
+
+    // ── AUTO-ROLLBACK TO FACTORY if safe mode AND dashboard is down ──
+    // Safe mode only helps if the SoftAP dashboard is reachable (that's the
+    // OTA recovery surface). If softap_start() failed, safe mode is a DEAD END
+    // — there is no way to recover from the main app. In that case, roll back
+    // to the permanent factory recovery partition so the user gets a working
+    // dashboard. The factory partition can never be overwritten by OTA, so
+    // this is always a safe landing spot.
+    if (health_is_safe_mode() && sap_err != ESP_OK) {
+        ESP_LOGE(TAG, "╔══════════════════════════════════════════════════╗");
+        ESP_LOGE(TAG, "║ SAFE MODE but SoftAP dashboard is DOWN.          ║");
+        ESP_LOGE(TAG, "║ No recovery possible from main app — rolling     ║");
+        ESP_LOGE(TAG, "║ back to FACTORY recovery partition.              ║");
+        ESP_LOGE(TAG, "╚══════════════════════════════════════════════════╝");
+        const esp_partition_t *factory = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+        if (factory) {
+            esp_err_t rb = esp_ota_set_boot_partition(factory);
+            if (rb == ESP_OK) {
+                ESP_LOGW(TAG, "Boot partition set to factory — restarting");
+                vTaskDelay(pdMS_TO_TICKS(500));
+                esp_restart();
+            } else {
+                ESP_LOGE(TAG, "Failed to set factory boot partition: %s",
+                          esp_err_to_name(rb));
+            }
+        } else {
+            ESP_LOGE(TAG, "Factory partition NOT FOUND — cannot auto-rollback");
+        }
+        // If we get here, rollback failed; fall through to safe mode anyway
+        // (SoftAP is down, but at least the device runs instead of freezing).
+    }
+
     if (health_is_safe_mode()) {
         ESP_LOGE(TAG, "══════════════════════════════════════════════════");
         ESP_LOGE(TAG, "  SAFE MODE — SoftAP-only recovery.");
